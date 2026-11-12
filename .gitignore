@@ -1,0 +1,28 @@
+# Secrets: never commit real env files (.env.example is the template)
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Embedding model (~470 MB, downloaded automatically on first start)
+embedding_service/models/
+
+# Generated deployment files
+*.service
+
+# Frontend (if added later)
+node_modules/
+dist/
+
+# OS / editors
+.DS_Store
+.idea/
+*.log

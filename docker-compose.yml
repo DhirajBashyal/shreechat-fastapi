@@ -1,0 +1,55 @@
+name: shreechat-ai-fastapi
+services:
+
+  redis:
+    image: redis:7.4-alpine
+    restart: always
+    ports:
+      - 6379:6379
+    volumes:
+      - redis-data:/data
+
+  db:
+    image: pgvector/pgvector:pg17
+    restart: always
+    ports:
+      - 5432:5432
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=shreechat-ai
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+
+  # App containers: started only with `docker compose --profile app up`
+  api:
+    build: .
+    profiles: ["app"]
+    restart: always
+    ports:
+      - 8000:8000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DB_URL=postgresql+asyncpg://postgres:password@db:5432/shreechat-ai
+      - REDIS_URL=redis://redis:6379
+      - EMBEDDING_SERVICE_URL=http://embeddings:8001/embeddings
+    depends_on:
+      - db
+      - redis
+      - embeddings
+
+  embeddings:
+    build: ./embedding_service
+    profiles: ["app"]
+    restart: always
+    ports:
+      - 8001:8001
+    volumes:
+      - embedding-models:/app/models
+
+volumes:
+  redis-data:
+  db-data:
+  embedding-models:

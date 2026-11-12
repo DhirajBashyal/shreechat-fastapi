@@ -1,0 +1,26 @@
+name: test-shreechat-ai-fastapi
+services:
+
+  redis:
+    image: redis:7.4-alpine
+    restart: always
+    ports:
+      - 6380:6379
+    volumes:
+      - redis-data:/data
+
+  db:
+    image: pgvector/pgvector:pg17
+    restart: always
+    ports:
+      - 5433:5432
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=shreechat-ai
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+
+volumes:
+  redis-data:
+  db-data:

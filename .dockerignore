@@ -1,0 +1,16 @@
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.DS_Store
+.env
+.env.*
+tests
+embedding_service
+docker-compose*.yml
+Dockerfile
+.dockerignore
+startup.sh

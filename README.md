@@ -26,6 +26,9 @@ with its own `router.py` and mount it in `app/main.py` under `/api/v2`.
 
 ## Local development setup
 
+The project requires Python 3.12 or 3.13. `uv` uses the repository's `.python-version`
+pin (3.12) for local commands, matching the Docker image.
+
 1. Install build tools
 ```
 sudo apt install build-essential
@@ -53,21 +56,19 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.7.0/install.ps
 make install
 ```
 
-4. Start development server
+4. Build and start the API and its dependencies in Docker
 ```
 make dev
-
-# After database is created by docker compose
-
-make migrate
 ```
-Development server should be running at `http://localhost:8000/docs`
+The API should be running at `http://localhost:8008/docs`. Database migrations run
+automatically when the API container starts.
 
-5. Start embedding server
+5. To run the embedding server separately on the host
 ```
 make embeddings
 ```
-Embedding server should be running at `http://localhost:8001/docs`
+Embedding server should be running at `http://localhost:8001/docs`. It already starts
+as a container dependency when using `make dev`.
 
 
 6. Make sure to run following commands before pushing

@@ -6,7 +6,7 @@ help:
 	@echo "mypy                               -- type check backend"
 	@echo "test                               -- test backend"
 	@echo "embeddings                         -- start embedding server"
-	@echo "dev                                -- start backend development server"
+	@echo "dev                                -- build and run backend in docker"
 	@echo "migrate                            -- run database migrations"
 	@echo "seed                               -- seed demo tenant (dev only; run migrate first)"
 	@echo "platform-admin ARGS=...            -- manage platform admins: grant <email> [--create] | revoke <email> | list"
@@ -52,10 +52,7 @@ embeddings:
 
 .PHONY: dev
 dev:
-	docker compose up -d
-	@echo "⏳ Waiting 5 seconds for docker services to be healthy..."
-	@sleep 5
-	uv run uvicorn app.main:app --reload --host "127.0.0.1" --port 8000 --workers 1 --log-level info
+	docker compose --profile app up --build
 
 .PHONY: migrate
 migrate:

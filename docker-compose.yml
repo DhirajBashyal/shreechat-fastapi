@@ -13,7 +13,7 @@ services:
     image: pgvector/pgvector:pg17
     restart: always
     ports:
-      - 5432:5432
+      - 5432
     volumes:
       - db-data:/var/lib/postgresql/data
     environment:
@@ -27,12 +27,12 @@ services:
     profiles: ["app"]
     restart: always
     ports:
-      - 8000:8000
+      - 8008:8000
     env_file:
       - path: .env
         required: false
     environment:
-      - DB_URL=postgresql+asyncpg://postgres:password@db:5432/shreechat-ai
+      - DB_URL=postgresql+asyncpg://postgres.rwpctfaizisopwmurtia:i2XML68uE2Bp7VJw@aws-0-eu-west-2.pooler.supabase.com:6543/postgres
       - REDIS_URL=redis://redis:6379
       - EMBEDDING_SERVICE_URL=http://embeddings:8001/embeddings
     depends_on:
@@ -45,7 +45,7 @@ services:
     profiles: ["app"]
     restart: always
     ports:
-      - 8001:8001
+      - 8001
     volumes:
       - embedding-models:/app/models
 

@@ -1,0 +1,14 @@
+# Model allow-list (docs/ai/AI_ARCHITECTURE.md §4).
+# The admin UI only offers these models and the API rejects others.
+# Before adding a model, check the provider's deprecation schedule; set
+# deprecated_at (YYYY-MM-DD) when a shutdown is announced: from that date the
+# model can't be newly selected (existing agents keep working until changed).
+models:
+  - {provider: openai, model: gpt-4o-mini, supports_tools: true, supports_structured_output: true, context_window: 128000, cost_per_1k_input: 0.00015, cost_per_1k_output: 0.0006, deprecated_at: null}
+  - {provider: openai, model: gpt-4o, supports_tools: true, supports_structured_output: true, context_window: 128000, cost_per_1k_input: 0.0025, cost_per_1k_output: 0.01, deprecated_at: null}
+  - {provider: openai, model: gpt-4.1-mini, supports_tools: true, supports_structured_output: true, context_window: 1000000, cost_per_1k_input: 0.0004, cost_per_1k_output: 0.0016, deprecated_at: null}
+  - {provider: openai, model: gpt-4.1, supports_tools: true, supports_structured_output: true, context_window: 1000000, cost_per_1k_input: 0.002, cost_per_1k_output: 0.008, deprecated_at: null}
+  - {provider: gemini, model: gemini-2.5-flash, supports_tools: true, supports_structured_output: true, context_window: 1000000, cost_per_1k_input: 0.0003, cost_per_1k_output: 0.0025, deprecated_at: null}
+  - {provider: gemini, model: gemini-2.5-pro, supports_tools: true, supports_structured_output: true, context_window: 1000000, cost_per_1k_input: 0.00125, cost_per_1k_output: 0.01, deprecated_at: null}
+  - {provider: anthropic, model: claude-haiku-5-5, supports_tools: true, supports_structured_output: true, context_window: 200000, cost_per_1k_input: null, cost_per_1k_output: null, deprecated_at: null}
+  - {provider: anthropic, model: claude-sonnet-5-5, supports_tools: true, supports_structured_output: true, context_window: 200000, cost_per_1k_input: null, cost_per_1k_output: null, deprecated_at: null}

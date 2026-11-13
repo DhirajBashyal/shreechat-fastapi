@@ -73,14 +73,32 @@ Loaded by `converse/settings.py` (pydantic-settings). Missing required values fa
 
 | Variable | Required | Notes |
 |---|---|---|
-| `AI_PLATFORM_PROVIDER` | if AI enabled | `openai` / `anthropic` / … (used when the tenant has no own key) |
-| `OPENAI_API_KEY` | if used | Platform key |
-| `ANTHROPIC_API_KEY` | if used | Platform key |
-| `GEMINI_API_KEY` | if used | |
-| `AI_MODELS_FILE` | no | `config/llm_models.yaml` |
-| `AI_DEFAULT_EMBEDDING_MODEL` | no | Must be in the models file |
+| `AI_PROVIDER` | if AI enabled | Platform provider, used when an agent has no tenant key: `openai` / `gemini` / `anthropic` |
+| `AI_API_KEY` | if AI enabled | Platform key for `AI_PROVIDER` |
+| `AI_CHAT_MODEL` | no | Default chat model for new agents (`gpt-4o-mini`); must be in `config/llm_models.yaml` |
+| `AI_CLASSIFIER_MODEL` | no | Cheaper model for intent/grounding/summary; empty = the agent's chat model |
+| `AI_CREDENTIALS_KEY` | outside local/test | Fernet key that encrypts tenant AI keys (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`). Local/test derive one from `JWT_SECRET_KEY` |
 | `AI_RUN_DEADLINE_SECONDS` | no | `45` |
-| `AI_TRACING` | no | `off` (default) / `langsmith` / `langfuse` (not for production customer data without a DPA) |
+| `AI_RUN_TOKEN_BUDGET` | no | `20000` tokens per run (all nodes) before the AI hands off |
+| `AI_MAX_CONCURRENT_RUNS_PER_ORG` | no | `5`; the AI worker re-schedules beyond it |
+| `AI_DEBOUNCE_SECONDS` | no | `2.5`; wait for more customer messages (last one wins) |
+| `AI_TRACING` | no | `false` (default). `true` lets LangChain send traces to LangSmith (`LANGSMITH_API_KEY`); traces contain customer content, so not for production without a DPA |
+| `METRICS_ENABLED` | no | `true`: Prometheus metrics at `GET /metrics` |
+| `METRICS_TOKEN` | recommended in production | When set, `/metrics` requires `Authorization: Bearer <token>` |
+| `EMBEDDING_SERVICE_URL` | yes | `http://localhost:8001/embeddings` (local `embedding_service/`) |
+
+Model allow-list: `config/llm_models.yaml` (shipped in the image).
+
+## Website live chat
+
+| Variable | Required | Notes |
+|---|---|---|
+| `WIDGET_APP_URL` | no | Where `widget-sdk` (`/widget/sdk.js`) and `widget-app` are served; empty = `FRONTEND_URL`. Its origin is always allowed next to each widget's `allowed_origins`, and it is the script URL in the embed code |
+| `WIDGET_VISITOR_TOKEN_TTL_DAYS` | no | `30` |
+| `WIDGET_SESSION_RATE_LIMIT` | no | `5/minute` new visitor sessions per IP |
+| `WIDGET_MESSAGE_RATE_LIMIT` | no | `20/minute` messages per visitor |
+
+Run `make outbox-relay` next to the API: it publishes committed events to realtime channels and delivers agent/AI replies to widget visitors.
 
 ## Billing
 
@@ -142,9 +160,10 @@ META_INSTAGRAM_APP_ID=
 META_INSTAGRAM_APP_SECRET=
 META_INSTAGRAM_VERIFY_TOKEN=change-me-instagram
 
-AI_PLATFORM_PROVIDER=openai
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
+AI_PROVIDER=openai
+AI_API_KEY=
+AI_CHAT_MODEL=gpt-4o-mini
+AI_CREDENTIALS_KEY=
 
 BILLING_ENABLED=false
 SMTP_HOST=localhost

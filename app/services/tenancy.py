@@ -1,17 +1,22 @@
-"""Organizations, workspaces, members and invitations.
+"""Organizations, workspaces, members, invitations and the organization
+lifecycle.
 
-Role rules (docs/10_AUTHENTICATION_AND_RBAC.md §4.1, docs/backend/API_DESIGN.md §3):
-- An organization has exactly one owner. Ownership isn't changed through the
-  member endpoints (that's a separate transfer-ownership flow).
-- Only the owner can grant, change or revoke the administrator role.
-- Administrators manage agents (permission ``member.manage``).
+Role rules (docs/12_ORGANIZATION_LEVELS_AND_PERMISSIONS.md §4):
+- An organization has exactly one owner. Nobody can remove or demote the
+  owner, and nobody becomes owner except through transfer-ownership.
+- Owners and administrators (permission ``member.manage``) invite, change and
+  remove administrators and agents. Nobody grants a role above their own.
+- Members don't edit or remove themselves through the member endpoints; they
+  leave with POST /organizations/{org}/leave (the owner must transfer first).
+- Owner-only (role check, not a permission code): transfer ownership, delete
+  and restore the organization. Both destructive ones need the password.
 """
 
 import uuid
 from datetime import timedelta
 
 from fastapi import Request
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,30 +24,44 @@ from app.core.config import settings
 from app.core.exceptions import (
     ConflictError,
     NotFoundError,
+    PasswordConfirmationError,
     PermissionDeniedError,
     ValidationFailedError,
 )
-from app.core.security import generate_token, hash_token, utcnow
+from app.core.security import generate_token, hash_token, utcnow, verify_password
 from app.core.tenancy import TenantContext
 from app.models import (
+    ApiAccessToken,
+    Conversation,
+    InboxMember,
     Invitation,
     Organization,
     OrganizationMembership,
+    TeamMember,
     User,
     Workspace,
     WorkspaceMembership,
 )
-from app.models.enums import MembershipRole
+from app.models.enums import ConversationStatus, MembershipRole, OrgStatus
 from app.schemas.tenancy import (
     InvitationCreate,
     MemberRead,
     MemberUpdate,
+    OrganizationRead,
     OrganizationUpdate,
+    PlanRead,
     WorkspaceCreate,
 )
 from app.services.audit import audit
 from app.services.auth import slugify
+from app.services.limits import check_agent_seats, plan_info
 from app.services.mailer import send_email
+
+ROLE_RANK = {
+    MembershipRole.AGENT: 0,
+    MembershipRole.ADMINISTRATOR: 1,
+    MembershipRole.OWNER: 2,
+}
 
 # ---------------------------------------------------------------------------
 # Organizations
@@ -54,6 +73,22 @@ async def get_organization(session: AsyncSession, ctx: TenantContext) -> Organiz
     if org is None:
         raise NotFoundError()
     return org
+
+
+async def organization_read(
+    session: AsyncSession, ctx: TenantContext, org: Organization
+) -> OrganizationRead:
+    """Owners and administrators see plan and limits; agents only the plan
+    name (docs/12 §3)."""
+    info = await plan_info(session, org)
+    sees_limits = ctx.membership_role in (
+        MembershipRole.OWNER,
+        MembershipRole.ADMINISTRATOR,
+    )
+    read = OrganizationRead.model_validate(org)
+    read.plan = PlanRead(code=info.code, name=info.name) if info.name else None
+    read.limits = info.limits if sees_limits else None
+    return read
 
 
 async def update_organization(
@@ -182,7 +217,8 @@ async def list_members(
                 membership_id=m.id,
                 user_id=user.id,
                 name=user.name,
-                email=user.email,
+                # Agents see names and availability, not contact details.
+                email=user.email if ctx.has("member.manage") else None,
                 role=m.role,
                 custom_role_id=m.custom_role_id,
                 availability=m.availability,
@@ -207,13 +243,19 @@ async def _get_member(
 
 
 def _check_can_manage(ctx: TenantContext, target_role: MembershipRole) -> None:
+    """May the caller invite, change or remove someone with ``target_role``
+    (or give someone that role)? The caller already holds member.manage."""
     if target_role == MembershipRole.OWNER:
         raise PermissionDeniedError("owner")
-    if (
-        target_role == MembershipRole.ADMINISTRATOR
-        and ctx.membership_role != MembershipRole.OWNER
-    ):
-        raise PermissionDeniedError("owner")
+    if ROLE_RANK[target_role] > ROLE_RANK[ctx.membership_role]:
+        raise PermissionDeniedError("member.manage")
+
+
+def _check_not_self(ctx: TenantContext, membership: OrganizationMembership) -> None:
+    if membership.id == ctx.membership_id:
+        raise ValidationFailedError(
+            "You can't change or remove yourself here; use leave organization"
+        )
 
 
 async def update_member(
@@ -225,6 +267,7 @@ async def update_member(
 ) -> MemberRead:
     m = await _get_member(session, ctx, membership_id)
     _check_can_manage(ctx, m.role)
+    _check_not_self(ctx, m)
     changes: dict[str, object] = {}
 
     if data.role is not None and data.role != m.role:
@@ -281,6 +324,41 @@ async def update_member(
     )
 
 
+async def _detach_member(
+    session: AsyncSession, organization_id: uuid.UUID, user_id: uuid.UUID
+) -> int:
+    """What happens when someone stops being a member (docs/12 §4):
+    their open conversations go back to the unassigned queue, they leave every
+    inbox and team, and their personal API tokens for this organization are
+    revoked. Access itself ends at once: memberships are read on every
+    request. Returns the number of conversations unassigned."""
+    result = await session.execute(
+        update(Conversation)
+        .where(
+            Conversation.organization_id == organization_id,
+            Conversation.assignee_id == user_id,
+            Conversation.status != ConversationStatus.RESOLVED,
+        )
+        .values(assignee_id=None)
+    )
+    for table in (InboxMember, TeamMember):
+        await session.execute(
+            delete(table).where(
+                table.organization_id == organization_id, table.user_id == user_id
+            )
+        )
+    await session.execute(
+        update(ApiAccessToken)
+        .where(
+            ApiAccessToken.organization_id == organization_id,
+            ApiAccessToken.user_id == user_id,
+            ApiAccessToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=utcnow())
+    )
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
 async def remove_member(
     session: AsyncSession,
     ctx: TenantContext,
@@ -289,6 +367,8 @@ async def remove_member(
 ) -> None:
     m = await _get_member(session, ctx, membership_id)
     _check_can_manage(ctx, m.role)
+    _check_not_self(ctx, m)
+    unassigned = await _detach_member(session, ctx.organization_id, m.user_id)
     await session.delete(m)  # workspace memberships cascade
     audit(
         session,
@@ -297,7 +377,35 @@ async def remove_member(
         resource_id=m.id,
         actor_id=ctx.principal.user_id,
         organization_id=ctx.organization_id,
-        changes={"user_id": str(m.user_id), "role": m.role.value},
+        changes={
+            "user_id": str(m.user_id),
+            "role": m.role.value,
+            "conversations_unassigned": unassigned,
+        },
+        request=request,
+    )
+    await session.commit()
+
+
+async def leave_organization(
+    session: AsyncSession, ctx: TenantContext, request: Request
+) -> None:
+    """Any member except the owner can leave (the owner transfers first)."""
+    if ctx.membership_role == MembershipRole.OWNER:
+        raise ValidationFailedError(
+            "The owner can't leave; transfer ownership first", code="owner_cannot_leave"
+        )
+    m = await _get_member(session, ctx, ctx.membership_id)
+    unassigned = await _detach_member(session, ctx.organization_id, m.user_id)
+    await session.delete(m)
+    audit(
+        session,
+        action="member.left",
+        resource_type="organization_membership",
+        resource_id=m.id,
+        actor_id=ctx.principal.user_id,
+        organization_id=ctx.organization_id,
+        changes={"role": m.role.value, "conversations_unassigned": unassigned},
         request=request,
     )
     await session.commit()
@@ -312,6 +420,8 @@ async def create_invitation(
     session: AsyncSession, ctx: TenantContext, data: InvitationCreate, request: Request
 ) -> Invitation:
     _check_can_manage(ctx, data.role)
+    if data.role == MembershipRole.OWNER:
+        raise ValidationFailedError("Use transfer-ownership to change the owner")
     already_member = await session.scalar(
         select(OrganizationMembership.id)
         .join(User, User.id == OrganizationMembership.user_id)
@@ -322,6 +432,7 @@ async def create_invitation(
     )
     if already_member:
         raise ConflictError("This person is already a member")
+    await check_agent_seats(session, ctx.organization_id, include_pending=True)
 
     token = generate_token("inv_")
     invitation = Invitation(
@@ -407,3 +518,137 @@ async def revoke_invitation(
         request=request,
     )
     await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Organization lifecycle (owner only; docs/12 §4 and §5.1)
+# ---------------------------------------------------------------------------
+
+
+async def _confirm_password(
+    session: AsyncSession, ctx: TenantContext, password: str
+) -> None:
+    user = await session.get(User, ctx.principal.user_id)
+    if user is None or not verify_password(password, user.password_hash):
+        raise PasswordConfirmationError()
+
+
+async def transfer_ownership(
+    session: AsyncSession,
+    ctx: TenantContext,
+    new_owner_membership_id: uuid.UUID,
+    password: str,
+    request: Request,
+) -> None:
+    """The owner hands the organization to an existing administrator and
+    becomes an administrator."""
+    await _confirm_password(session, ctx, password)
+    target = await _get_member(session, ctx, new_owner_membership_id)
+    if target.id == ctx.membership_id:
+        raise ValidationFailedError("You are already the owner")
+    if target.role != MembershipRole.ADMINISTRATOR:
+        raise ValidationFailedError(
+            "The new owner must be an administrator", code="new_owner_not_admin"
+        )
+    current = await _get_member(session, ctx, ctx.membership_id)
+    # Demote first: the database allows only one owner at a time.
+    current.role = MembershipRole.ADMINISTRATOR
+    await session.flush()
+    target.role = MembershipRole.OWNER
+    target.custom_role_id = None
+    audit(
+        session,
+        action="organization.ownership_transferred",
+        resource_type="organization",
+        resource_id=ctx.organization_id,
+        actor_id=ctx.principal.user_id,
+        organization_id=ctx.organization_id,
+        changes={
+            "from_membership_id": str(current.id),
+            "to_membership_id": str(target.id),
+        },
+        request=request,
+    )
+    await session.commit()
+
+
+async def schedule_deletion(
+    session: AsyncSession, ctx: TenantContext, password: str, request: Request
+) -> Organization:
+    """Start the grace period. Until it ends only the owner sees the
+    organization, and only to restore it."""
+    await _confirm_password(session, ctx, password)
+    org = await get_organization(session, ctx)
+    org.status = OrgStatus.PENDING_DELETION
+    org.deletion_scheduled_at = utcnow() + timedelta(
+        days=settings.ORGANIZATION_DELETION_GRACE_DAYS
+    )
+    audit(
+        session,
+        action="organization.deletion_scheduled",
+        resource_type="organization",
+        resource_id=org.id,
+        actor_id=ctx.principal.user_id,
+        organization_id=org.id,
+        changes={"purge_at": org.deletion_scheduled_at.isoformat()},
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(org)
+    return org
+
+
+async def restore_organization(
+    session: AsyncSession, ctx: TenantContext, request: Request
+) -> Organization:
+    org = await get_organization(session, ctx)
+    if org.status != OrgStatus.PENDING_DELETION:
+        raise ConflictError("Organization isn't scheduled for deletion")
+    if org.deletion_scheduled_at is not None and org.deletion_scheduled_at <= utcnow():
+        raise NotFoundError()  # grace period over; waiting for the purge job
+    org.status = OrgStatus.ACTIVE
+    org.deletion_scheduled_at = None
+    audit(
+        session,
+        action="organization.restored",
+        resource_type="organization",
+        resource_id=org.id,
+        actor_id=ctx.principal.user_id,
+        organization_id=org.id,
+        request=request,
+    )
+    await session.commit()
+    await session.refresh(org)
+    return org
+
+
+async def purge_expired_organizations(session: AsyncSession) -> list[uuid.UUID]:
+    """Close organizations whose grace period has ended.
+
+    Sets ``deleted_at`` (the organization disappears for everyone, including
+    the owner, and its slug is freed). Erasing the tenant's rows from every
+    table is done by the data-retention job (docs/backend/BACKGROUND_JOBS.md),
+    which picks up organizations with ``deleted_at`` set.
+    """
+    now = utcnow()
+    orgs = list(
+        await session.scalars(
+            select(Organization).where(
+                Organization.status == OrgStatus.PENDING_DELETION,
+                Organization.deletion_scheduled_at <= now,
+                Organization.deleted_at.is_(None),
+            )
+        )
+    )
+    for org in orgs:
+        org.deleted_at = now
+        audit(
+            session,
+            action="organization.purged",
+            resource_type="organization",
+            resource_id=org.id,
+            actor_kind="system",
+            organization_id=org.id,
+        )
+    await session.commit()
+    return [o.id for o in orgs]

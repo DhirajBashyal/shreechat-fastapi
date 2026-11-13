@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -140,6 +141,10 @@ class ContactIdentity(Base):
     )
     identity_verified: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
+    )
+    # Widget visitor tokens carry it; bumping it revokes older tokens.
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
     )
     profile: Mapped[dict[str, Any]] = jsonb_object()
     created_at: Mapped[datetime] = created_at_col()

@@ -78,6 +78,8 @@ sequenceDiagram
 
 ### 4.1 Base roles
 
+The full who-sees-what / who-manages-whom matrix and the organization lifecycle are in [12_ORGANIZATION_LEVELS_AND_PERMISSIONS.md](12_ORGANIZATION_LEVELS_AND_PERMISSIONS.md). Administrators manage other administrators and agents; nobody but the owner (through transfer) touches the owner.
+
 | Capability | owner | administrator | agent |
 |---|---|---|---|
 | Billing, delete organization, transfer ownership | ✅ | ❌ | ❌ |
@@ -114,10 +116,12 @@ BASE_ROLE_PERMISSIONS = {
 }
 NEVER_IN_CUSTOM_ROLES = {"ai.credentials.manage", "billing.manage", "organization.manage", "member.manage"}
 
-def effective_permissions(membership) -> frozenset[str]:
-    if membership.custom_role_id is not None:          # custom role REPLACES agent defaults (R2)
-        return frozenset(membership.custom_role.permission_codes)
-    return frozenset(BASE_ROLE_PERMISSIONS[membership.role])
+def effective_permissions(role, custom_role_permissions) -> frozenset[str]:
+    # A custom role REPLACES the agent defaults; it never applies to owners/administrators
+    # (also a DB check: org_memberships_custom_role_agent_chk). Code: app/core/permissions.py
+    if role == "agent" and custom_role_permissions is not None:
+        return custom_role_permissions - NEVER_IN_CUSTOM_ROLES
+    return BASE_ROLE_PERMISSIONS[role]
 ```
 
 Custom roles can only be assigned to `agent` members (owners/administrators always have their full set), matching Chatwoot's Enterprise behaviour.

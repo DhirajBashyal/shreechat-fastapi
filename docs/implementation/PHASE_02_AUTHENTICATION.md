@@ -3,6 +3,8 @@
 ## 1. Objective
 Users can sign up, log in securely, belong to organizations and workspaces with roles, and every tenant-scoped request is authorized and isolated.
 
+Organization levels, roles and member rules as built: [ORGANIZATION_LEVELS_IMPLEMENTATION.md](ORGANIZATION_LEVELS_IMPLEMENTATION.md) (the code lives in `app/`, not the `src/converse/` layout below).
+
 ## 2. Features
 - Signup (user + organization + default workspace + owner membership + trial subscription in one transaction).
 - Login, refresh rotation with reuse detection, logout / logout-all, password reset, email verification.

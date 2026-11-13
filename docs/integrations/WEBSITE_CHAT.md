@@ -5,6 +5,33 @@ Two parts:
 1. **Server**: `converse/channels/web_widget/` (adapter) + `converse/api/routes/widget/` (REST) + the realtime gateway's visitor endpoint.
 2. **Client**: `widget-sdk/` (TypeScript loader, ~10 KB gzipped) and `widget-app/` (the chat UI rendered in an iframe). These are separate frontend packages; this document specifies their contract.
 
+## Implementation status
+
+The server side is built. The `converse/...` paths below are the original design layout; the code lives in `app/`. Tests: `tests/test_web_widget.py` (14 tests: admin, origins, sessions, conversations, idempotency, private notes, identify/merge, pre-chat, attributes, labels, relay delivery, WebSocket). The client packages are specified for the frontend in [../frontend-implamentation/08_WEBSITE_WIDGET.md](../frontend-implamentation/08_WEBSITE_WIDGET.md).
+
+| Section | Part | Status | Code |
+|---|---|---|---|
+| §3 | Visitor REST API, `website_token` (query or body) + `X-Visitor-Token`, 64 KB body cap | ✅ |
+| §3, §8 | Origin check. The iframe runs on our own origin (`WIDGET_APP_URL` / `FRONTEND_URL`), so for requests from it the server checks the **embedding page's** origin, which the iframe sends as `X-Parent-Origin` (REST) or `parent_origin` (socket auth frame), taken from the browser-verified `event.origin` of the SDK's `postMessage` | ✅ | `origin_allowed` in `app/services/widget.py` | `app/api/v1/endpoints/widget.py`, `app/services/widget.py`, body cap in `app/main.py` |
+| §3 | Additions: `DELETE /sessions` (`reset()`: revokes the token), `DELETE /contact/custom-attributes/{key}`, `PATCH /conversations/{id}` (conversation attributes), `POST/DELETE /conversations/{id}/labels` (labels with `labels.widget_settable`) | ✅ | same |
+| §3 | `POST /uploads` | 🔜 answers `503 uploads_unavailable` until the storage module exists; `attachment_file_ids` → `422 attachments_not_supported` | same |
+| §3 | `POST /events` | ✅ recorded as `widget.event` in the outbox (automation consumes it in Phase 7) | same |
+| §4 | `/ws/widget`: auth frame within 5 s, Origin check, `rt:contact:{realtime_token}`, `typing` / `ping` frames, close `4401` / `4403` / `4404`, closes when the token expires | ✅ | `app/api/widget_ws.py` |
+| §4 | Events to visitors: `message.created` / `message.updated` (non-private), `conversation.status_changed`, `conversation.typing` | ✅ via the outbox relay (`make outbox-relay`) | `app/services/outbox_relay.py`, `app/core/realtime.py` |
+| §4 | `agent.presence` | 🔜 needs the agent gateway (Phase 5); `config.agents_online` already reads `presence:org:{org}` | — |
+| §5 | Identify: unverified never merges (someone else's email is kept as `unverified_email`), HMAC-verified merges into the contact with that identifier, token rotated (`contact_identities.token_version`), `identity_verification_required`, `409 reset_required` for a second identifier | ✅ | `app/services/widget.py` (`identify`, `_merge_into`) |
+| §5 | Email continuity | 🔜 R2, needs the email module | — |
+| §6 | Conversation on first message, pre-chat (`require_name` / `require_email` / `require_phone`), `additional_attributes` (referer, browser, language, initiated_at), AI inbox → `pending` + `ai_active`, greeting, out-of-office once, `lock_to_single_conversation`, `allow_messages_after_resolved` | ✅ | `app/services/widget.py` |
+| §6 | Auto-assignment when no AI agent | 🔜 R1, the assignment service isn't built yet; conversations start `open` and unassigned | — |
+| §6 | AI reply: the visitor's message is queued on the `ai` queue (debounced) after commit | ✅ | `_wake_ai` in `app/api/v1/endpoints/widget.py` |
+| §7 | `WebWidgetAdapter`: `send_message` publishes to every identity of the contact in the inbox; `connect` (token, encrypted identity secret, route); `disconnect` (route deleted) | ✅ | `app/channels/web_widget.py`, `app/channels/base.py` |
+| §7 | Delivery status `read` when the visitor's `seen` covers the message | ✅ | `mark_seen` |
+| §8 | Rate limits: 5 sessions/min/IP, 20 messages/min/visitor (configurable), 10 identify/min, 60 events/min | ✅ | `WIDGET_*_RATE_LIMIT` |
+| §8 | hCaptcha/Turnstile after a threshold, MIME sniffing / image re-encoding | 🔜 with uploads | — |
+| Admin | Create / read / update / disconnect, rotate identity secret, embed code, plan limit `inboxes` | ✅ | `app/api/v1/endpoints/web_widgets.py`, `app/services/web_widgets.py` ([API_DESIGN §12](../backend/API_DESIGN.md#12-website-widget-settings)) |
+
+Run `make outbox-relay` (and `make ai-worker` for AI inboxes) next to the API. Demo widget after `make seed`: `website_token` `demo_website_token_0001`, identity secret `demo_widget_identity_secret_0001`, origin `http://localhost:5173`.
+
 ## 1. Chatwoot reference
 
 - `Channel::WebWidget`: `website_token`, `hmac_token`, `hmac_mandatory`, `allowed_domains`, `pre_chat_form_enabled/options`, `continuity_via_email`, `feature_flags`, `reply_time`, `widget_color`, `welcome_title/tagline`.

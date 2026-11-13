@@ -36,6 +36,7 @@ COPY --from=builder /app/.venv /app/.venv
 COPY alembic.ini gunicorn.conf.py ./
 COPY migrations ./migrations
 COPY app ./app
+COPY config ./config
 
 USER appuser
 EXPOSE 8000

@@ -25,13 +25,14 @@ Conventions used by every table:
 | `settings` | `{ "require_mfa": false, "default_locale": "en", "data_retention_days": null }` |
 | `limits_override` | Same keys as `subscription_plans.limits`; overrides per tenant |
 | `external_customer_id` | Stripe customer id |
+| `deletion_scheduled_at` | Set when the owner deletes the organization (`pending_deletion`); restorable until then, purged after |
 
 ## `organization_memberships`
 
 | Column | Notes |
 |---|---|
-| `role` | `owner` (exactly one per org, enforced in `MembershipService`), `administrator`, `agent` |
-| `custom_role_id` | Only for `agent`; replaces the default agent permissions |
+| `role` | `owner` (exactly one per org: unique index `org_memberships_one_owner_uniq`, plus `app/services/tenancy.py`), `administrator`, `agent` |
+| `custom_role_id` | Only for `agent` (check `org_memberships_custom_role_agent_chk`); replaces the default agent permissions |
 | `availability` | `online` / `busy` / `offline`: the agent's chosen status. Live presence (connected or not) is in Redis |
 | `auto_offline` | Set `offline` automatically when all sockets disconnect |
 | `accepts_conversations` | Excluded from auto-assignment when `false` |

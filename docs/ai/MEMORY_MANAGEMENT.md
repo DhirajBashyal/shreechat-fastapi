@@ -2,6 +2,17 @@
 
 How the AI agent remembers a conversation without unbounded prompts, and without becoming a second source of truth for messages.
 
+## Implementation status
+
+| Part | Status |
+|---|---|
+| History rebuilt from `messages` each run (private notes and activity excluded, 3,000-token budget, `[human agent]` prefix) | ✅ `DbRepo.load_conversation` |
+| Rolling summary with optimistic `summarized_through_seq` check, also on handoff | ✅ inline in `memory_persistence` (🔜 move to the `ai` queue) |
+| Facts: language and negative-sentiment streak | ✅ · order ids / product interest 🔜 (come with commerce tools) |
+| Summaries of the same contact's resolved conversations via `customer_info` | ✅ |
+| Checkpointer | Not used (R2), as designed |
+| Retention / `ContactErasureService` | 🔜 |
+
 ## 1. Memory tiers
 
 | Tier | Lifetime | Stored in | Contents |

@@ -2,6 +2,19 @@
 
 How a conversation moves from the AI agent to a human, how humans take over at any time, and how the AI is given the conversation back.
 
+## Implementation status
+
+| Part | Status | Code |
+|---|---|---|
+| Handoff triggers: customer request, configured intents, low confidence, turn limit, negative-sentiment streak, no answer, guardrail block, model request, quota / agent disabled, provider error / timeout | ✅ | `app/ai/graph/edges.py` (`intent_handoff_reason`), `nodes.human_handoff`, `runner._fallback_handoff` |
+| `outside_hours` | ✅ inbox working hours + `handoff_policy.outside_hours = handoff` | `app/ai/working_hours.py` |
+| What a handoff does: customer message, private note, `ai_active=false`, `open`, team, session `handed_off`, `conversation_assignments (ai_handoff)`, activity message, `reporting_events`, outbox events, under a row lock | ✅ | `app/services/conversation_ai.py` `handoff_to_human`; `test_live_handoff_and_human_takeover` |
+| Race safety: delivery re-checks AI active / unassigned / no newer message / deadline under the lock | ✅ | `DbRepo.deliver` |
+| Pause AI / Return to AI endpoints | ✅ | `POST …/ai/pause`, `…/ai/resume` |
+| Human takeover on reply / assignment (`switch_off_ai`) | ✅ function ready; called by the reply and assignment endpoints when they are built (Phase 3) | |
+| Auto-assignment and notifications after handoff | 🔜 Phase 3 | |
+| Assist-only mode | 🔜 R2 (agents without an `autonomous` inbox link don't run) | |
+
 ## 1. Chatwoot reference
 
 - Conversations handled by a bot start in `pending` (`Conversation#determine_conversation_status`).

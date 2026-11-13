@@ -10,6 +10,24 @@ The chatbot raises three separate permission questions. Each has its own model, 
 
 Related: [AI_ARCHITECTURE.md](AI_ARCHITECTURE.md), [LANGGRAPH_NODES.md](LANGGRAPH_NODES.md), [HUMAN_HANDOFF.md](HUMAN_HANDOFF.md), [../10_AUTHENTICATION_AND_RBAC.md](../10_AUTHENTICATION_AND_RBAC.md).
 
+## Implementation status
+
+| Part | Status | Code / test |
+|---|---|---|
+| 6 AI permissions in the catalog and base roles | ✅ | `app/core/permissions.py` |
+| `ai.credentials.manage` never in custom roles | ✅ | `NEVER_IN_CUSTOM_ROLES` |
+| Escalation rules: `customer_info` needs `custom_attribute.manage`; `update_contact` needs `contact.manage`; KBs/inboxes from the same workspace only | ✅ | `app/ai/policy.py` `check_escalation`; `test_no_privilege_escalation_through_the_ai` |
+| Audit of prompt/tool/action changes with old/new values; credentials created/deleted | ✅ | `app/services/ai_agents.py`; `test_config_changes_are_audited_with_old_and_new_values` |
+| Activity visibility follows conversation visibility; chunk text only with `ai.knowledge.manage` | ✅ | `GET …/ai-runs`; `test_live_reply_runs_once_and_records_activity` |
+| `allowed_actions` validated (`handoff` mandatory) + DB check `ai_agents_actions_chk` | ✅ | `validate_actions`; `test_invalid_agent_config_is_rejected` |
+| Tool policies; `tool_settings` can only tighten (`policy_cannot_be_relaxed`) | ✅ | `TOOL_POLICIES`, `effective_policy` |
+| Tool executor: enabled / call limit / verification / approval, every decision recorded in `ai_tool_calls` | ✅ | `app/ai/graph/tools.py`; `test_tool_needs_customer_verification` |
+| Run bound to one conversation; `reply` checked against `allowed_actions` at delivery | ✅ | `DbRepo.deliver` |
+| Actions `add_label`, `set_priority`, `resolve`, `snooze`, `update_contact`, `add_private_note` | 🔜 config accepted and validated; the graph doesn't execute them yet | |
+| Verification levels `none` / `channel` / `verified` computed each run, never raised by text | ✅ | `DbRepo.load_customer` |
+| Step-up verification (one-time code) | 🔜 R2 | |
+| `AIAgentPrincipal` as a separate principal type | Partial: writes are attributed (`sender_kind = ai_agent`, `assigned_by_kind = ai_agent`); a principal class arrives with API tokens (R1) | |
+
 ## 1. Chatwoot reference
 
 - **Configuration is admin-only.** `Captain::AssistantPolicy` (`enterprise/app/policies/captain/assistant_policy.rb`) allows `create?`, `update?`, `destroy?`, `sync?` and `drilldown?` only for `administrator`. Any member can `index?`, `show?` and use `playground?`. `tools?` needs an administrator or the `captain_integration` feature flag. Custom tools, MCP servers, scenarios and FAQ suggestions have their own policies in `enterprise/app/policies/captain/`.

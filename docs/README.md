@@ -17,6 +17,8 @@ This directory holds the **architecture and implementation documentation**. No a
 | Understand the architecture | [04_TECHNOLOGY_STACK.md](04_TECHNOLOGY_STACK.md), [05_SYSTEM_ARCHITECTURE.md](05_SYSTEM_ARCHITECTURE.md) |
 | Work on the database | [06](06_DATABASE_ARCHITECTURE.md), [07](07_DATABASE_SCHEMA.md), [08](08_DATABASE_RELATIONSHIPS.md), [database/](database/) |
 | Understand tenancy and security | [09_MULTI_TENANCY.md](09_MULTI_TENANCY.md), [10_AUTHENTICATION_AND_RBAC.md](10_AUTHENTICATION_AND_RBAC.md), [11_SECURITY_AND_PRODUCTION_READINESS.md](11_SECURITY_AND_PRODUCTION_READINESS.md) |
+| Know who sees and does what at each level (platform, organization, workspace), and the organization lifecycle | [12_ORGANIZATION_LEVELS_AND_PERMISSIONS.md](12_ORGANIZATION_LEVELS_AND_PERMISSIONS.md); how it's built: [implementation/ORGANIZATION_LEVELS_IMPLEMENTATION.md](implementation/ORGANIZATION_LEVELS_IMPLEMENTATION.md) |
+| Build the frontend | [frontend-implamentation/README.md](frontend-implamentation/README.md) |
 | Build a channel integration | [integrations/](integrations/) |
 | Build the AI agent | [ai/](ai/) |
 | Decide who may configure the AI, what the bot may do, what customers may obtain | [ai/AI_ROLES_AND_PERMISSIONS.md](ai/AI_ROLES_AND_PERMISSIONS.md) |
@@ -42,6 +44,8 @@ docs/python-platform/
 ├── 09_MULTI_TENANCY.md                Organizations, workspaces, RLS, request scoping
 ├── 10_AUTHENTICATION_AND_RBAC.md      JWT, refresh rotation, API tokens, permissions
 ├── 11_SECURITY_AND_PRODUCTION_READINESS.md
+├── 12_ORGANIZATION_LEVELS_AND_PERMISSIONS.md  Levels, roles, who sees/does what, org lifecycle
+├── frontend-implamentation/           Frontend build guides: auth, roles, organizations & members, platform console
 ├── integrations/                      Channel adapter contract + Meta + widget
 ├── ai/                                LangGraph agent, RAG, memory, handoff, AI roles & permissions
 ├── backend/                           Folder structure, API, pipelines, realtime, jobs, storage
@@ -59,7 +63,7 @@ docs/python-platform/
 | Composite tenant FKs | Tested as the table owner (no RLS): a message pointing at another workspace's conversation and a label claiming another org's workspace are both rejected |
 | Seed SQL (`database/SEED_DATA_SQL.md`) | Ran twice in a row (idempotent) |
 | AI permission constraints | Tested: a new AI agent defaults to `{reply, handoff}`; an agent without `handoff` and one with an unknown action (`issue_refund`) are both rejected by `ai_agents_actions_chk` |
-| Generated docs | `07_DATABASE_SCHEMA.md`, `database/INITIAL_SCHEMA_SQL.md`, `database/SEED_DATA_SQL.md`, `database/RELATIONSHIPS.md` (149 FKs) and `database/INDEXES_AND_CONSTRAINTS.md` (209 indexes, 49 checks) were generated from the executed SQL / live catalog, so they match what ran |
+| Generated docs | `07_DATABASE_SCHEMA.md`, `database/INITIAL_SCHEMA_SQL.md`, `database/SEED_DATA_SQL.md`, `database/RELATIONSHIPS.md` (149 FKs) and `database/INDEXES_AND_CONSTRAINTS.md` (210 indexes, 50 checks) were generated from the executed SQL / live catalog, so they match what ran |
 | Internal links and anchors | All relative links and `#anchors` across the 51 files resolve |
 | `table.column` references | Every reference to a Converse column exists in the schema (the only non-matches are Chatwoot column names in "Chatwoot equivalent" cells) |
 | Chatwoot file references | All 68 cited Chatwoot paths exist in this repository. See the checklist in 01 for modules that were *not* inspected |

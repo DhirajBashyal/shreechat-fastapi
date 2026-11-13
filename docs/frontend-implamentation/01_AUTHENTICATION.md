@@ -21,7 +21,7 @@ Backend rules behind this document: [../10_AUTHENTICATION_AND_RBAC.md](../10_AUT
 **UI to build:** "Sign out" and "Sign out everywhere" buttons in the logged-in layout (§6.5).
 **Logic to build:** token storage, session restore on page load, automatic refresh, logout (including other open tabs), route protection (logged-in vs logged-out pages).
 
-Out of scope for this document (separate docs later): organizations, workspaces, members, invitations pages. Signup's `invitation_token` field is described here but the invitation pages are not.
+Out of scope for this document: organizations, workspaces, members and invitation pages are in [03_ORGANIZATIONS_AND_MEMBERS.md](03_ORGANIZATIONS_AND_MEMBERS.md). Signup's `invitation_token` field is described here.
 
 ## 2. Ground rules
 
@@ -108,15 +108,17 @@ Show `details[].issue` under the input whose name matches `field`; otherwise sho
   "organization_id": "0b7e…",
   "organization_name": "Shree Traders",
   "organization_slug": "shree-traders",
+  "organization_status": "active",
+  "deletion_scheduled_at": null,
   "membership_id": "a41d…",
   "role": "owner",
   "custom_role_id": null,
   "permissions": ["audit_log.view", "billing.manage", "member.manage", "organization.manage", "…"],
-  "workspaces": [{ "id": "9c2a…", "name": "Main", "slug": "main" }]
+  "workspaces": [{ "id": "9c2a…", "name": "Support", "slug": "support" }]
 }
 ```
 
-`role` is `owner` | `administrator` | `agent`. Keep `memberships` in the auth state: later pages use `permissions` to show/hide actions.
+`role` is `owner` | `administrator` | `agent`. Keep `memberships` in the auth state: later pages use `permissions` to show/hide actions. `organization_status` is `active` | `suspended` | `pending_deletion`; anything but `active` shows a blocking screen instead of the app ([03 §3](03_ORGANIZATIONS_AND_MEMBERS.md#3-organization-status-screens)).
 
 **`TokenResponse`** (signup, login)
 
@@ -139,6 +141,7 @@ TypeScript types:
 
 ```ts
 export type MembershipRole = "owner" | "administrator" | "agent";
+export type OrgStatus = "active" | "suspended" | "pending_deletion";
 
 export interface User {
   id: string; name: string; display_name: string | null;
@@ -147,10 +150,15 @@ export interface User {
 export interface WorkspaceSummary { id: string; name: string; slug: string }
 export interface Membership {
   organization_id: string; organization_name: string; organization_slug: string;
+  organization_status: OrgStatus; deletion_scheduled_at: string | null;
   membership_id: string; role: MembershipRole; custom_role_id: string | null;
   permissions: string[]; workspaces: WorkspaceSummary[];
 }
-export interface MeResponse { user: User; memberships: Membership[] }
+export interface MeResponse {
+  user: User; memberships: Membership[];
+  /** Our staff: show a "Platform console" link (04_PLATFORM_ADMIN.md). */
+  is_platform_admin: boolean;
+}
 export interface RefreshResponse {
   access_token: string; token_type: string; expires_in: number;
   refresh_token: string | null; refresh_expires_at: string; remember_me: boolean;
@@ -170,6 +178,9 @@ Ask the backend developer to run `make seed` (after `make migrate`). It creates 
 | `owner@demo.example.com` | owner | Everything (all 25 permissions) |
 | `admin@demo.example.com` | administrator | Everything except billing |
 | `agent@demo.example.com` | agent (custom role "Support Lead") | Restricted UI: no member management, no org settings |
+| `platform@demo.example.com` | platform admin, **no organization** | Platform console ([04](04_PLATFORM_ADMIN.md)); lands on `/platform` after login |
+
+`owner@demo.example.com` is also a platform admin, to test a user who is both an owner and staff.
 
 Running it again is safe (no duplicates). For signup tests, use any new email.
 
@@ -182,7 +193,7 @@ Two modes: create a **new organization**, or **join** an organization with an in
 | | New organization | Join with invitation |
 |---|---|---|
 | Body | `{ name, email, password, organization_name, remember_me }` | `{ name, email, password, invitation_token, remember_me }` |
-| Backend creates | User, organization, **owner** membership, workspace **"Main"**, 14-day trial | User + membership with the invited role |
+| Backend creates | User, organization, **owner** membership, workspace **"Support"**, 14-day trial | User + membership with the invited role |
 
 | Field | Rules |
 |---|---|
@@ -373,6 +384,7 @@ export function refreshSession(): Promise<RefreshResponse | null> {
 | `status` | `"loading"` · `"authenticated"` · `"anonymous"` |
 | `user` | `User` or `null` |
 | `memberships` | `Membership[]` |
+| `isPlatformAdmin` | `is_platform_admin` from login / `/auth/me` |
 | `login(email, password, rememberMe)` | §3.2 → save token, user, memberships |
 | `signup(input)` | §3.1 → same |
 | `logout()` / `logoutAll()` | §3.4 / §3.5 → clear state in `finally` |
@@ -525,7 +537,7 @@ Handle it in the API client (§5.2): clear the auth state, then redirect to `/lo
 
 | # | Scenario | Expected |
 |---|---|---|
-| 1 | Sign up with a new organization | Lands in the app; `memberships[0].role = "owner"`, workspace "Main" |
+| 1 | Sign up with a new organization | Lands in the app; `memberships[0].role = "owner"`, workspace "Support" |
 | 2 | Sign up with an existing email | `409`, message shown, no redirect |
 | 3 | Sign up with a 9-char password | Blocked client-side; backend would return `422` |
 | 4 | Login with wrong password / unknown email | Same "Invalid email or password" message |

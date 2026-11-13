@@ -13,9 +13,14 @@ Never run it in production.
 
 Accounts created (password for all: Password123!):
 
-    owner@demo.example.com   Olivia Owner     owner (also platform admin)
-    admin@demo.example.com   Adam Admin       administrator   (addition, not in docs)
-    agent@demo.example.com   Arjun Agent      agent with custom role "Support Lead"
+    owner@demo.example.com     Olivia Owner     owner (also platform admin)
+    admin@demo.example.com     Adam Admin       administrator   (addition, not in docs)
+    agent@demo.example.com     Arjun Agent      agent with custom role "Support Lead"
+    platform@demo.example.com  Pat Platform     platform admin only, no organization
+                                                (addition: staff login, docs/12 §7.1)
+
+Website widget: website_token demo_website_token_0001, identity secret
+demo_widget_identity_secret_0001, allowed origin http://localhost:5173.
 """
 
 import argparse
@@ -25,29 +30,53 @@ import psycopg
 from psycopg import sql
 
 from app.core.config import settings
+from app.core.crypto import KEY_VERSION, SecretKeyMissingError, encrypt_secret
 from app.core.security import hash_password
 
 DEMO_PASSWORD = "Password123!"
+# Website widget (docs/integrations/WEBSITE_CHAT.md): identifier_hash =
+# hex(HMAC_SHA256(DEMO_WIDGET_IDENTITY_SECRET, identifier)). Demo only.
+DEMO_WEBSITE_TOKEN = "demo_website_token_0001"
+DEMO_WIDGET_IDENTITY_SECRET = "demo_widget_identity_secret_0001"
 
 # Fixed UUIDs (docs/database/SEED_DATA_SQL.md) so tests and API examples can
 # reference them.
 OWNER_ID = "00000000-0000-0000-0000-00000000a001"
 AGENT_ID = "00000000-0000-0000-0000-00000000a002"
 ADMIN_ID = "00000000-0000-0000-0000-00000000a003"  # addition
+PLATFORM_ID = "00000000-0000-0000-0000-00000000a004"  # addition: staff account
 ORG_ID = "00000000-0000-0000-0000-00000000b001"
 WORKSPACE_ID = "00000000-0000-0000-0000-00000000e001"
 
 USERS = [
-    (OWNER_ID, "owner@demo.example.com", "Olivia Owner"),
-    (AGENT_ID, "agent@demo.example.com", "Arjun Agent"),
-    (ADMIN_ID, "admin@demo.example.com", "Adam Admin"),
+    (
+        OWNER_ID,
+        "owner@demo.example.com",
+        "Olivia Owner",
+        "owner of Demo Org + platform admin",
+    ),
+    (
+        AGENT_ID,
+        "agent@demo.example.com",
+        "Arjun Agent",
+        'agent, custom role "Support Lead"',
+    ),
+    (ADMIN_ID, "admin@demo.example.com", "Adam Admin", "administrator of Demo Org"),
+    (
+        PLATFORM_ID,
+        "platform@demo.example.com",
+        "Pat Platform",
+        "platform admin, no organization",
+    ),
 ]
+
+# Platform admins (looked up by email, so an existing account with the same
+# email is reused instead of breaking the foreign key).
+PLATFORM_ADMIN_EMAILS = ("owner@demo.example.com", "platform@demo.example.com")
 
 # Everything after the users, from SEED_DATA_SQL.md Part B (plus the admin
 # membership marked below).
 DEMO_TENANT_SQL = """
-INSERT INTO platform_admins (user_id) VALUES ('00000000-0000-0000-0000-00000000a001')
-ON CONFLICT DO NOTHING;
 
 INSERT INTO organizations (id, name, slug, created_by) VALUES
     ('00000000-0000-0000-0000-00000000b001', 'Demo Org', 'demo', '00000000-0000-0000-0000-00000000a001')
@@ -112,6 +141,11 @@ ON CONFLICT DO NOTHING;
 INSERT INTO web_widgets (organization_id, workspace_id, channel_connection_id, website_token, website_url, allowed_origins, welcome_title) VALUES
     ('00000000-0000-0000-0000-00000000b001', '00000000-0000-0000-0000-00000000e001', '00000000-0000-0000-0000-000000011001',
      'demo_website_token_0001', 'http://localhost:5173', ARRAY['http://localhost:5173'], 'Welcome to Demo')
+ON CONFLICT DO NOTHING;
+
+-- Labels the website widget may set (converse.setLabel)
+INSERT INTO labels (organization_id, workspace_id, title, description, color, widget_settable) VALUES
+    ('00000000-0000-0000-0000-00000000b001', '00000000-0000-0000-0000-00000000e001', 'sales', 'Sales enquiry (set by the website widget)', '#10b981', true)
 ON CONFLICT DO NOTHING;
 
 INSERT INTO channel_routes (provider, external_id, organization_id, workspace_id, inbox_id, channel_connection_id) VALUES
@@ -209,7 +243,7 @@ def seed() -> None:
                     "Run `uv run alembic upgrade head` first."
                 )
             # Users first, parameterised (the password hash is generated here).
-            for user_id, email, name in USERS:
+            for user_id, email, name, _ in USERS:
                 conn.execute(
                     """
                     INSERT INTO users (id, email, password_hash, name, email_verified_at)
@@ -218,8 +252,30 @@ def seed() -> None:
                     """,
                     (user_id, email, password_hash, name),
                 )
+            for email in PLATFORM_ADMIN_EMAILS:
+                conn.execute(
+                    """
+                    INSERT INTO platform_admins (user_id)
+                    SELECT id FROM users WHERE email = %s AND deleted_at IS NULL
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (email,),
+                )
             # The rest has no parameters, so it runs as one script.
             conn.execute(DEMO_TENANT_SQL)  # type: ignore[call-overload]
+            try:
+                ciphertext = encrypt_secret(DEMO_WIDGET_IDENTITY_SECRET)
+            except SecretKeyMissingError:
+                ciphertext = None
+            if ciphertext is not None:
+                conn.execute(
+                    """
+                    UPDATE web_widgets
+                    SET identity_hmac_secret_ciphertext = %s, identity_hmac_key_version = %s
+                    WHERE website_token = %s AND identity_hmac_secret_ciphertext IS NULL
+                    """,
+                    (ciphertext, KEY_VERSION, DEMO_WEBSITE_TOKEN),
+                )
 
         counts = {
             table: _count(conn, table)
@@ -235,8 +291,13 @@ def seed() -> None:
     _out("Demo tenant seeded (Demo Org).")
     _out(f"  rows: {counts}")
     _out(f"  Password for all accounts: {DEMO_PASSWORD}")
-    for _, email, name in USERS:
-        _out(f"    {email:<26} {name}")
+    for _, email, name, what in USERS:
+        _out(f"    {email:<28} {name:<14} {what}")
+    _out("  Platform console: log in as platform@demo.example.com (local/test only).")
+    _out(
+        f"  Website widget: website_token={DEMO_WEBSITE_TOKEN}, "
+        f"identity secret={DEMO_WIDGET_IDENTITY_SECRET} (origin http://localhost:5173)"
+    )
 
 
 def main() -> None:

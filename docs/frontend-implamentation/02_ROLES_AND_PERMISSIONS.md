@@ -2,7 +2,7 @@
 
 How the frontend uses roles and permissions to decide **what to show** in a multi-tenant app: which organization is active, which menu items, buttons and pages are visible, and what to do when the API says no.
 
-Prerequisite: [01_AUTHENTICATION.md](01_AUTHENTICATION.md) (the auth state holds `memberships`). Backend rules: [../10_AUTHENTICATION_AND_RBAC.md](../10_AUTHENTICATION_AND_RBAC.md) §4, [../09_MULTI_TENANCY.md](../09_MULTI_TENANCY.md).
+Prerequisite: [01_AUTHENTICATION.md](01_AUTHENTICATION.md) (the auth state holds `memberships`). How all levels fit together in the app (route tree, guards, navigation): [05_ORGANIZATION_LEVELS.md](05_ORGANIZATION_LEVELS.md). Backend rules: [../10_AUTHENTICATION_AND_RBAC.md](../10_AUTHENTICATION_AND_RBAC.md) §4, [../09_MULTI_TENANCY.md](../09_MULTI_TENANCY.md).
 
 ## 1. The one rule
 
@@ -23,6 +23,8 @@ There is **no separate roles API call**. Login, signup and `GET /auth/me` return
   "organization_id": "00000000-0000-0000-0000-00000000b001",
   "organization_name": "Demo Org",
   "organization_slug": "demo",
+  "organization_status": "active",
+  "deletion_scheduled_at": null,
   "membership_id": "00000000-0000-0000-0000-00000000d002",
   "role": "agent",
   "custom_role_id": "00000000-0000-0000-0000-00000000c001",
@@ -37,7 +39,8 @@ There is **no separate roles API call**. Login, signup and `GET /auth/me` return
 | Field | Meaning for the UI |
 |---|---|
 | `role` | `owner` · `administrator` · `agent`. Use it for **labels** (role badge) and the member-management rules in §6, nothing else |
-| `custom_role_id` | Not `null` = the agent has a custom role; its permissions **replace** the agent defaults (already applied in `permissions`) |
+| `custom_role_id` | Not `null` = the agent has a custom role; its permissions **replace** the agent defaults (already applied in `permissions`). Only ever set on agents (the database enforces it) |
+| `organization_status` | `active` · `suspended` · `pending_deletion`; anything but `active` shows a blocking screen ([03 §3](03_ORGANIZATIONS_AND_MEMBERS.md#3-organization-status-screens)) |
 | `permissions` | The **final, effective** list for this organization. Use it for every show/hide decision |
 | `workspaces` | Workspaces this user may open: **all** of them for owners/administrators, only **assigned** ones for agents |
 
@@ -54,7 +57,8 @@ Optional: `GET /api/v1/permissions` (logged in) returns the catalog `[{ "code", 
 | Permissions | **All 25** | All except `billing.manage` (24) | 6 (below) |
 | Exactly one per organization | Yes | No | No |
 | Workspaces | All | All | Only assigned |
-| Can manage members | Administrators and agents | Agents only | No |
+| Can manage members | Administrators and agents | Administrators and agents (never the owner) | No (can only leave) |
+| Owner-only actions | Transfer ownership, delete / restore organization | — | — |
 
 Agent defaults: `conversation.view_participating`, `conversation.view_unassigned`, `conversation.manage`, `contact.manage`, `ai.activity.view`, `conversation.ai_control`.
 
@@ -67,7 +71,7 @@ Status: **now** = backend endpoints exist today; **later** = screen comes with a
 | Permission | Unlocks in the UI | Status |
 |---|---|---|
 | `organization.manage` | Edit organization settings (name, locale, timezone); **Create workspace** button | now |
-| `member.manage` | Invite member, pending invitations list + revoke, **Edit** / **Remove** on member rows | now |
+| `member.manage` | Invite member, pending invitations list + revoke, **Edit** / **Remove** on member rows, member emails | now |
 | `audit_log.view` | "Audit log" menu item and page | now |
 | `billing.manage` | Billing / subscription page | later |
 | `inbox.manage` | Inboxes and channel connections settings | later |
@@ -83,16 +87,18 @@ Status: **now** = backend endpoints exist today; **later** = screen comes with a
 | `conversation.view_participating` | "Mine" filter | later |
 | `conversation.manage` | Reply, assign, label, change status | later |
 | `conversation.delete` | Delete conversation | later |
-| `conversation.ai_control` | Pause / resume AI on a conversation | later |
+| `conversation.ai_control` | Pause / resume AI on a conversation ([07 §8](07_AI_AGENTS.md#8-pause-ai--return-to-ai-conversation-header)) | now (API) |
 | `contact.manage` | Create / edit / merge / delete contacts | later |
 | `contact.export` | Export contacts | later |
-| `ai.agent.manage` | AI agents settings | later |
-| `ai.credentials.manage` | AI provider keys | later |
-| `ai.knowledge.manage` | Knowledge bases | later |
-| `ai.playground.use` | AI playground | later |
-| `ai.activity.view` | AI activity panel on conversations | later |
+| `ai.agent.manage` | AI agent settings, link inboxes/knowledge ([07](07_AI_AGENTS.md)) | now |
+| `ai.credentials.manage` | AI provider keys ([07 §4](07_AI_AGENTS.md#4-ai-provider-keys-settingsai-keys)) | now |
+| `ai.knowledge.manage` | Knowledge bases: documents, chunks, test search (list is visible to every member) ([06](06_KNOWLEDGE_BASES.md)) | now |
+| `ai.playground.use` | AI playground ([07 §6](07_AI_AGENTS.md#6-playground-ai-agentsagentidplayground)) | now |
+| `ai.activity.view` | AI activity panel on conversations ([07 §7](07_AI_AGENTS.md#7-ai-activity-panel-conversation-sidebar)); API ready, panel lives in the conversation screen | now (API) |
 
-Visible to **every member** (no permission needed): organization overview, workspace list (filtered by `workspaces`), workspace details, member list (read-only), own account page.
+Visible to **every member** (no permission needed): organization overview (plan name; limits only for owners/administrators), workspace list (filtered by `workspaces`), workspace details, member list (read-only, names and availability; `email` is `null` without `member.manage`), **Leave organization** (everyone except the owner), own account page.
+
+Owner only (check `role === "owner"`, not a permission): **Transfer ownership**, **Delete organization**, **Restore organization**. See [03_ORGANIZATIONS_AND_MEMBERS.md](03_ORGANIZATIONS_AND_MEMBERS.md).
 
 ## 4. Current organization (multi-tenancy)
 
@@ -184,28 +190,32 @@ These mirror the backend exactly; the backend rejects anything else with `403`.
 | Current user | Can invite as | Can change role of | Can remove | Role options in the dropdown |
 |---|---|---|---|---|
 | owner | administrator, agent | administrators and agents | administrators and agents | administrator, agent |
-| administrator | agent | agents only | agents only | agent |
+| administrator | administrator, agent | administrators and agents | administrators and agents | administrator, agent |
 | agent (any custom role) | — | — | — | — |
 
 Always:
-- **Nobody** can edit or remove the **owner** (ownership transfer is a separate, future flow). Never offer "Owner" in a role dropdown.
-- Don't show Edit/Remove on the **current user's own row**.
+- **Nobody** can edit or remove the **owner**; ownership only changes through **Transfer ownership** ([03 §5](03_ORGANIZATIONS_AND_MEMBERS.md#5-owner-only-actions)). Never offer "Owner" in a role dropdown.
+- Don't show Edit/Remove on the **current user's own row** (the backend rejects it with `422`); show **Leave organization** instead (not for the owner).
 - Workspace checkboxes only matter for **agents**; owners and administrators always see every workspace (show "All workspaces").
 - Changing someone to administrator clears their custom role (backend does this).
 
 ```ts
 /** Roles `me` may assign when inviting or editing. */
 export function assignableRoles(me: Membership | undefined): MembershipRole[] {
-  if (!me) return [];
-  if (me.role === "owner") return ["administrator", "agent"];
-  if (can(me, "member.manage")) return ["agent"];
-  return [];
+  return can(me, "member.manage") ? ["administrator", "agent"] : [];
 }
 
-/** May `me` edit/remove a member whose role is `target`? */
-export function canManageMember(me: Membership | undefined, target: MembershipRole): boolean {
-  if (!me || !can(me, "member.manage") || target === "owner") return false;
-  return target === "agent" || me.role === "owner";
+/** May `me` edit/remove this member? Never the owner, never yourself. */
+export function canManageMember(
+  me: Membership | undefined,
+  target: { role: MembershipRole; membership_id: string },
+): boolean {
+  return (
+    !!me &&
+    can(me, "member.manage") &&
+    target.role !== "owner" &&
+    target.membership_id !== me.membership_id
+  );
 }
 ```
 
@@ -225,9 +235,13 @@ Permissions are resolved by the backend on **every request**, so a change applie
 | Status | `code` | Body extra | Show |
 |---|---|---|---|
 | 403 | `permission_denied` | `"permission": "<code>"` (or `"owner"` for owner-only actions) | "Your role doesn't allow this action." Then reload `/auth/me` (§7) |
-| 403 | `organization_suspended` | — | Full-page message: "This organization is suspended. Contact the organization owner." |
+| 403 | `organization_suspended` | — | Full-page "suspended" screen ([03 §3](03_ORGANIZATIONS_AND_MEMBERS.md#3-organization-status-screens)); reload `/auth/me` |
+| 403 | `organization_pending_deletion` | — | Owner's "scheduled for deletion" screen with **Restore** ([03 §3](03_ORGANIZATIONS_AND_MEMBERS.md#3-organization-status-screens)) |
+| 403 | `password_incorrect` | — | Under the password field: "Password is incorrect." (Not a logout: the session is fine) |
+| 402 | `plan_limit_reached` | `"limit"`, `"max"` | "Your plan allows at most {max} members. Upgrade or remove someone first." |
 | 404 | `not_found` | — | "This page doesn't exist or you don't have access to it." The API returns `404` (not `403`) for other organizations' and unassigned workspaces' resources, so don't try to tell "missing" and "forbidden" apart |
-| 422 | `validation_error` | message | e.g. "Use transfer-ownership to change the owner" when trying to make someone owner (the UI should never offer it) |
+| 422 | `validation_error` | message | e.g. "Use transfer-ownership to change the owner" when trying to make someone owner, or editing your own row (the UI should never offer either) |
+| 422 | `owner_cannot_leave` | — | "Transfer ownership before leaving." (Hide Leave for the owner) |
 
 ```json
 {
@@ -251,7 +265,7 @@ Use the demo accounts from [01 §2.6](01_AUTHENTICATION.md#26-test-accounts-deve
 | 3 | owner | Members page | Invite form with roles **Administrator, Agent**; Edit/Remove on admin and agent rows; none on own row |
 | 4 | owner | Create workspace | Button visible; works |
 | 5 | admin@demo.example.com | Menu | Includes Audit log |
-| 6 | admin | Members page | Invite roles: **Agent** only; Edit/Remove only on the agent row (not owner, not self) |
+| 6 | admin | Members page | Invite roles: **Administrator, Agent**; Edit/Remove on agent and other administrator rows (not owner, not self) |
 | 7 | agent@demo.example.com | Header | **Agent** badge |
 | 8 | agent | Menu | No Audit log |
 | 9 | agent | Members page | Read-only list, no invite form, no Edit/Remove, text "Only owners and administrators can change roles or invite people." |

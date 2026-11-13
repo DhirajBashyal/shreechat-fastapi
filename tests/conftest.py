@@ -4,15 +4,25 @@ Tests run against the database in DB_URL (use ENV_FILE=.env.test) and need
 Redis for rate limiting. The schema must be migrated (alembic upgrade head).
 """
 
+import asyncio
+import hashlib
+import math
+import re
 import uuid
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
+from app.core.config import settings
+from app.core.constants import EMBEDDING_DIMENSIONS
 from app.core.rate_limit import limiter
 from app.main import app
+from app.services import embeddings
 
 API = "/api/v1"
 
@@ -78,3 +88,42 @@ def signup(
 
 def bearer(tokens: dict[str, Any]) -> dict[str, str]:
     return {"Authorization": f"Bearer {tokens['access_token']}"}
+
+
+def run_sql(statement: str, **params: Any) -> list[Any]:
+    """Run SQL on a separate connection, for state the API can't create
+    (suspension, plan overrides, platform admins, conversations)."""
+
+    async def run() -> list[Any]:
+        engine = create_async_engine(settings.DB_URL, poolclass=NullPool)
+        try:
+            async with engine.begin() as conn:
+                result = await conn.execute(text(statement), params)
+                return list(result.all()) if result.returns_rows else []
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run())
+
+
+# --- Fake embedding service (deterministic hashed bag of words, 384 dims) ---
+
+
+def _fake_vector(text: str) -> list[float]:
+    v = [0.0] * EMBEDDING_DIMENSIONS
+    for word in re.findall(r"\w+", text.lower()):
+        v[int(hashlib.md5(word.encode()).hexdigest(), 16) % EMBEDDING_DIMENSIONS] += 1.0
+    norm = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / norm for x in v]
+
+
+@pytest.fixture
+def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    async def fake(texts: list[str]) -> list[list[float]]:
+        calls.append(texts)
+        return [_fake_vector(t) for t in texts]
+
+    monkeypatch.setattr(embeddings, "embed_texts", fake)
+    return calls

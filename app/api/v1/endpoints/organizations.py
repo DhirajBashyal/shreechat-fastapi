@@ -8,17 +8,20 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.api.deps import (
     CurrentUserDep,
     DbSession,
     OrgContext,
+    OwnerContext,
+    OwnerRestoreContext,
     require_permission,
 )
 from app.core.permissions import PERMISSIONS
 from app.core.tenancy import TenantContext
 from app.models import AuditLog, Organization, OrganizationMembership
+from app.models.enums import MembershipRole, OrgStatus
 from app.schemas.auth import AcceptInvitationRequest, MeResponse, UserRead
 from app.schemas.tenancy import (
     AuditLogRead,
@@ -28,7 +31,9 @@ from app.schemas.tenancy import (
     MemberUpdate,
     OrganizationRead,
     OrganizationUpdate,
+    PasswordConfirmation,
     PermissionRead,
+    TransferOwnershipRequest,
     WorkspaceCreate,
     WorkspaceRead,
 )
@@ -39,6 +44,7 @@ from app.services.access import (
     resolve_membership,
     visible_workspaces,
 )
+from app.services.platform import is_platform_admin
 
 router = APIRouter()
 
@@ -62,6 +68,8 @@ async def list_permissions(current: CurrentUserDep) -> list[PermissionRead]:
 async def list_organizations(
     current: CurrentUserDep, session: DbSession
 ) -> list[OrganizationRead]:
+    # Same visibility as memberships: an organization pending deletion is
+    # listed for its owner only.
     orgs = await session.scalars(
         select(Organization)
         .join(
@@ -71,17 +79,24 @@ async def list_organizations(
         .where(
             OrganizationMembership.user_id == current.user.id,
             Organization.deleted_at.is_(None),
+            or_(
+                Organization.status != OrgStatus.PENDING_DELETION,
+                OrganizationMembership.role == MembershipRole.OWNER,
+            ),
         )
         .order_by(Organization.created_at)
     )
     return [OrganizationRead.model_validate(o) for o in orgs]
 
 
-@router.get("/organizations/{organization_id}", tags=["Organizations"])
+@router.get(
+    "/organizations/{organization_id}",
+    tags=["Organizations"],
+    summary="Details, plan and limits (limits for owners/administrators only)",
+)
 async def get_organization(ctx: OrgContext, session: DbSession) -> OrganizationRead:
-    return OrganizationRead.model_validate(
-        await tenancy_service.get_organization(session, ctx)
-    )
+    org = await tenancy_service.get_organization(session, ctx)
+    return await tenancy_service.organization_read(session, ctx, org)
 
 
 @router.patch("/organizations/{organization_id}", tags=["Organizations"])
@@ -89,7 +104,52 @@ async def update_organization(
     request: Request, body: OrganizationUpdate, ctx: ManageOrg, session: DbSession
 ) -> OrganizationRead:
     org = await tenancy_service.update_organization(session, ctx, body, request)
+    return await tenancy_service.organization_read(session, ctx, org)
+
+
+# --- Lifecycle (owner only) ---------------------------------------------------
+
+
+@router.delete(
+    "/organizations/{organization_id}",
+    tags=["Organizations"],
+    summary="Schedule deletion (owner, password re-entry, 30-day grace period)",
+)
+async def delete_organization(
+    request: Request, body: PasswordConfirmation, ctx: OwnerContext, session: DbSession
+) -> OrganizationRead:
+    org = await tenancy_service.schedule_deletion(session, ctx, body.password, request)
     return OrganizationRead.model_validate(org)
+
+
+@router.post(
+    "/organizations/{organization_id}/restore",
+    tags=["Organizations"],
+    summary="Cancel a scheduled deletion (owner, within the grace period)",
+)
+async def restore_organization(
+    request: Request, ctx: OwnerRestoreContext, session: DbSession
+) -> OrganizationRead:
+    org = await tenancy_service.restore_organization(session, ctx, request)
+    return await tenancy_service.organization_read(session, ctx, org)
+
+
+@router.post(
+    "/organizations/{organization_id}/transfer-ownership",
+    tags=["Organizations"],
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Make an administrator the owner; you become an administrator",
+)
+async def transfer_ownership(
+    request: Request,
+    body: TransferOwnershipRequest,
+    ctx: OwnerContext,
+    session: DbSession,
+) -> Response:
+    await tenancy_service.transfer_ownership(
+        session, ctx, body.membership_id, body.password, request
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- Workspaces ---------------------------------------------------------------
@@ -129,6 +189,19 @@ async def create_workspace(
 @router.get("/organizations/{organization_id}/members", tags=["Members"])
 async def list_members(ctx: OrgContext, session: DbSession) -> list[MemberRead]:
     return await tenancy_service.list_members(session, ctx)
+
+
+@router.post(
+    "/organizations/{organization_id}/leave",
+    tags=["Members"],
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Leave the organization (not the owner: transfer ownership first)",
+)
+async def leave_organization(
+    request: Request, ctx: OrgContext, session: DbSession
+) -> Response:
+    await tenancy_service.leave_organization(session, ctx, request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.patch(
@@ -216,6 +289,7 @@ async def accept_invitation(
     return MeResponse(
         user=UserRead.model_validate(current.user),
         memberships=await list_memberships(session, current.user.id),
+        is_platform_admin=await is_platform_admin(session, current.user.id),
     )
 
 

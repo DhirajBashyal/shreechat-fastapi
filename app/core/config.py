@@ -41,9 +41,69 @@ class Settings(BaseSettings):
     INVITATION_TTL_DAYS: int = 7
     TRIAL_PLAN_CODE: str = "business_monthly"
     TRIAL_DAYS: int = 14
+    # Brute-force guard on POST /auth/login, per client IP (slowapi syntax).
+    # Loosen only in local dev, e.g. LOGIN_RATE_LIMIT=1000/minute in .env.
+    LOGIN_RATE_LIMIT: str = "5/5minutes"
+    # AI agent (docs/ai/AI_ARCHITECTURE.md §4). Platform LLM used when an agent
+    # has no tenant credential. AI_PROVIDER: openai | gemini | anthropic.
+    AI_PROVIDER: str = "openai"
+    AI_API_KEY: str = ""
+    AI_CHAT_MODEL: str = "gpt-4o-mini"
+    AI_CLASSIFIER_MODEL: str = ""
+    # Fernet key for tenant AI provider keys (ai_provider_credentials). Empty in
+    # local/test → derived from JWT_SECRET_KEY. Generate:
+    # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    AI_CREDENTIALS_KEY: str = ""
+    AI_RUN_DEADLINE_SECONDS: int = 45
+    # Total tokens (all nodes) one run may spend before it hands off.
+    AI_RUN_TOKEN_BUDGET: int = 20_000
+    # Concurrent AI runs per organization (queue worker reschedules beyond it).
+    AI_MAX_CONCURRENT_RUNS_PER_ORG: int = 5
+    # Wait for more customer messages before answering (last message wins).
+    AI_DEBOUNCE_SECONDS: float = 2.5
+    # LangSmith/Langfuse tracing through LangChain callbacks. Off by default:
+    # traces contain customer content.
+    AI_TRACING: bool = False
+    # Prometheus-format metrics at GET /metrics. Set METRICS_TOKEN to require
+    # "Authorization: Bearer <token>".
+    METRICS_ENABLED: bool = True
+    METRICS_TOKEN: str = ""
+
+    # Owner-deleted organizations can be restored for this long, then purged.
+    ORGANIZATION_DELETION_GRACE_DAYS: int = 30
 
     # Frontend URL used to build links in emails (password reset, invitations)
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # Website live chat (docs/integrations/WEBSITE_CHAT.md). WIDGET_APP_URL is
+    # where widget-sdk / widget-app are served (defaults to FRONTEND_URL); its
+    # origin is always allowed, next to each widget's allowed_origins.
+    WIDGET_APP_URL: str = ""
+    WIDGET_VISITOR_TOKEN_TTL_DAYS: int = 30
+    WIDGET_SESSION_RATE_LIMIT: str = "5/minute"  # per IP
+    WIDGET_MESSAGE_RATE_LIMIT: str = "20/minute"  # per visitor
+
+    # Meta channels (docs/integrations/{WHATSAPP,FACEBOOK_MESSENGER,INSTAGRAM}.md).
+    # One platform Meta app serves all tenants.
+    META_APP_ID: str = ""
+    META_APP_SECRET: str = ""
+    META_GRAPH_API_VERSION: str = "v24.0"
+    META_GRAPH_URL: str = "https://graph.facebook.com"
+    META_MESSENGER_VERIFY_TOKEN: str = ""
+    META_WHATSAPP_VERIFY_TOKEN: str = ""
+    META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: str = ""
+    META_INSTAGRAM_APP_ID: str = ""
+    META_INSTAGRAM_APP_SECRET: str = ""  # empty = META_APP_SECRET
+    META_INSTAGRAM_VERIFY_TOKEN: str = ""
+    META_INSTAGRAM_GRAPH_URL: str = "https://graph.instagram.com"
+    META_INSTAGRAM_OAUTH_URL: str = "https://api.instagram.com"
+    # Public base URL of this API (OAuth redirect URIs, signed media URLs).
+    PUBLIC_API_URL: str = "http://localhost:8000"
+
+    # File storage (docs/backend/STORAGE_ARCHITECTURE.md). Only "local" today.
+    STORAGE_BACKEND: str = "local"
+    STORAGE_LOCAL_PATH: str = "./var/storage"
+    MAX_UPLOAD_MB: int = 40
 
     # SMTP (leave SMTP_HOST empty in local dev: emails are logged instead)
     SMTP_HOST: str = ""

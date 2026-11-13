@@ -2,6 +2,21 @@
 
 Retrieval-Augmented Generation for the AI agent: tenants upload or link knowledge, we chunk and embed it into `kb_chunks` (pgvector), and the agent retrieves relevant chunks at answer time.
 
+## Implementation status
+
+| Part | Status | Code |
+|---|---|---|
+| Embedding client for the local service | ✅ | `app/services/embeddings.py` |
+| Knowledge bases + documents API (`text`, `faq`, `url`) | ✅ | `app/api/v1/endpoints/knowledge.py`, `app/services/knowledge.py` |
+| Extraction, heading-aware chunking | ✅ | `app/ai/rag/chunking.py` |
+| SSRF-safe URL fetch (public addresses only, ≤ 3 redirects re-checked, 10 s, 5 MB, html/plain) | ✅ | `app/ai/rag/fetch.py` |
+| Ingestion with content hash and atomic chunk replace | ✅ runs inline in the request | `app/ai/rag/ingest.py` |
+| Hybrid search (HNSW cosine + FTS, RRF), policy-only search, context block with citations | ✅ | `app/ai/rag/retriever.py`; debug: `POST /workspaces/{ws}/knowledge-search` |
+| Tests incl. tenant isolation | ✅ | `tests/test_knowledge.py` |
+| File uploads (PDF, DOCX), site crawl, weekly re-sync, background queue | 🔜 | needs file storage and a worker |
+| Eval sets: recall@8 and answer checks | ✅ | `make ai-eval` (`app/jobs/ai_eval.py`) |
+| Reranking | 🔜 | |
+
 ## 1. Chatwoot reference
 
 Captain (Enterprise) crawls documents (`Captain::Documents::CrawlJob`, Firecrawl or a simple page crawler), generates FAQ question/answer pairs from them with an LLM (`Captain::Llm::FaqGeneratorService`), embeds the FAQs (`captain_assistant_responses.embedding vector(1536)`, ivfflat index) and searches them (`Captain::Tools::SearchDocumentationService`). Retrieval is at **FAQ level**.
@@ -19,7 +34,7 @@ flowchart LR
     E --> F["Normalise + content_hash (sha256)"]
     F --> G{"hash changed?"}
     G -- no --> H["status ready, last_synced_at = now"]
-    G -- yes --> I["Chunk: heading-aware, about 500 tokens, 50 overlap"]
+    G -- yes --> I["Chunk: heading-aware, about 100 tokens, 15 overlap"]
     I --> J["Embed in batches of 64<br/>(tenant or platform key)"]
     J --> K["Transaction: delete old chunks of document, insert new chunks"]
     K --> H
@@ -31,8 +46,8 @@ flowchart LR
 | Sources | `url` (single page; site crawl with sitemap and max pages is R2), `file` (PDF, DOCX, TXT, MD, HTML, ≤ 20 MB), `text` (pasted), `faq` (question + answer pairs) |
 | Fetch safety | `SafeHttpClient`: blocks private/loopback/link-local IPs after DNS resolution (SSRF), follows ≤ 3 redirects re-checking each hop, 10 s timeout, 5 MB cap, `text/html` / `application/pdf` only |
 | Extraction | Remove nav/footer/script; keep headings for `heading_path` metadata |
-| Chunking | Split by headings first, then by paragraphs to ~500 tokens (tiktoken `cl100k_base` as a neutral counter), 50-token overlap; each chunk carries `metadata.heading_path`, `source_url`, `page` |
-| Embedding | `knowledge_bases.embedding_model` (default `text-embedding-3-small`, 1536 dims; verify current availability before launch). Batches of 64, retry on 429/5xx |
+| Chunking | Split by headings first, then paragraphs, sentences, words, to ~**100 tokens** with a 15-token overlap (estimated as 1.35 × words). The heading path is prepended to each chunk; each chunk carries `metadata.heading_path`, `source_url`, `title`. The size is set by the embedding model's window (below), not by the LLM |
+| Embedding | The local embedding service (`embedding_service/`, `POST {EMBEDDING_SERVICE_URL}` = `/embeddings`, body `{"text": [...]}` → `{"embeddings": [[...]]}`), model `paraphrase-multilingual-MiniLM-L12-v2`, **384 dims** (`kb_chunks.embedding vector(384)`). The model reads **at most 128 word-piece tokens** per text and ignores the rest, which is why chunks are ~100 tokens. Multilingual: a Nepali question matches an English answer. Batches of 64; timeouts, connection errors and 5xx retried twice. Changing the model means a migration (vector size) and re-embedding every knowledge base |
 | Atomic replace | Old chunks of the document are deleted and new ones inserted in one transaction, so retrieval never sees a half-updated document |
 | Re-sync | Beat task: URL documents re-fetched weekly (configurable); unchanged `content_hash` skips re-embedding |
 | Cost control | Plan limit on KB size (chunks per workspace); embedding usage recorded in `usage_records (metric = ai_tokens)` |

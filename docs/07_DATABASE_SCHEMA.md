@@ -215,6 +215,7 @@ CREATE TABLE organizations (
     settings            jsonb NOT NULL DEFAULT '{}'::jsonb,
     limits_override     jsonb NOT NULL DEFAULT '{}'::jsonb,
     external_customer_id varchar(255),
+    deletion_scheduled_at timestamptz,  -- set while status = pending_deletion (docs/12 §5.1)
     created_by          uuid REFERENCES users(id) ON DELETE SET NULL,
     created_at          timestamptz NOT NULL DEFAULT NOW(),
     updated_at          timestamptz NOT NULL DEFAULT NOW(),
@@ -282,9 +283,11 @@ CREATE TABLE organization_memberships (
     updated_at      timestamptz NOT NULL DEFAULT NOW(),
     CONSTRAINT org_memberships_user_uniq UNIQUE (organization_id, user_id),
     CONSTRAINT org_memberships_org_id_uniq UNIQUE (organization_id, id),
+    CONSTRAINT org_memberships_custom_role_agent_chk CHECK (custom_role_id IS NULL OR role = 'agent'),
     FOREIGN KEY (organization_id, custom_role_id) REFERENCES roles(organization_id, id) ON DELETE SET NULL (custom_role_id)
 );
 CREATE INDEX org_memberships_user_idx ON organization_memberships (user_id);
+CREATE UNIQUE INDEX org_memberships_one_owner_uniq ON organization_memberships (organization_id) WHERE role = 'owner';
 ```
 
 ### `invitations`

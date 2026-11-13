@@ -18,7 +18,7 @@ from app.models import (
     Workspace,
     WorkspaceMembership,
 )
-from app.models.enums import MembershipRole
+from app.models.enums import MembershipRole, OrgStatus
 from app.schemas.auth import MembershipRead, WorkspaceSummary
 
 
@@ -69,6 +69,13 @@ async def resolve_membership(
     if row is None:
         return None
     membership, organization = row
+    # During the deletion grace period only the owner (who can restore it)
+    # still sees the organization; for everyone else it's gone (docs/12 §5.1).
+    if (
+        organization.status == OrgStatus.PENDING_DELETION
+        and membership.role != MembershipRole.OWNER
+    ):
+        return None
     custom = await _custom_role_permissions(session, membership.custom_role_id)
     return ResolvedMembership(
         membership=membership,
@@ -132,6 +139,8 @@ async def list_memberships(
                 organization_id=resolved.organization.id,
                 organization_name=resolved.organization.name,
                 organization_slug=resolved.organization.slug,
+                organization_status=resolved.organization.status,
+                deletion_scheduled_at=resolved.organization.deletion_scheduled_at,
                 membership_id=resolved.membership.id,
                 role=resolved.membership.role,
                 custom_role_id=resolved.membership.custom_role_id,

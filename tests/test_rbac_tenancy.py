@@ -124,7 +124,7 @@ def test_agent_sees_only_assigned_workspaces(
     assert [w["id"] for w in listed.json()] == [ws_id]
 
 
-def test_only_owner_manages_administrators(
+def test_administrators_manage_admins_and_agents_but_not_the_owner(
     client: TestClient, sent_emails: list[dict[str, str]]
 ) -> None:
     owner = signup(client)
@@ -134,27 +134,94 @@ def test_only_owner_manages_administrators(
     assert "member.manage" in admin["memberships"][0]["permissions"]
     assert "billing.manage" not in admin["memberships"][0]["permissions"]
 
-    # Administrator can invite agents...
+    # Administrators invite agents and other administrators (docs/12 §4)...
+    for role in ("agent", "administrator"):
+        r = client.post(
+            f"{API}/organizations/{org}/invitations",
+            json={"email": unique_email(), "role": role},
+            headers=bearer(admin),
+        )
+        assert r.status_code == 201, r.text
+    # ...but nobody invites an owner.
     r = client.post(
         f"{API}/organizations/{org}/invitations",
-        json={"email": unique_email(), "role": "agent"},
-        headers=bearer(admin),
-    )
-    assert r.status_code == 201
-    # ...but not other administrators.
-    r = client.post(
-        f"{API}/organizations/{org}/invitations",
-        json={"email": unique_email(), "role": "administrator"},
-        headers=bearer(admin),
+        json={"email": unique_email(), "role": "owner"},
+        headers=bearer(owner),
     )
     assert r.status_code == 403
 
+    # An administrator can demote and remove another administrator.
+    other = _member_join(client, owner, sent_emails, role="administrator")
+    other_id = other["memberships"][0]["membership_id"]
+    r = client.patch(
+        f"{API}/organizations/{org}/members/{other_id}",
+        json={"role": "agent"},
+        headers=bearer(admin),
+    )
+    assert r.status_code == 200 and r.json()["role"] == "agent"
+    r = client.delete(
+        f"{API}/organizations/{org}/members/{other_id}", headers=bearer(admin)
+    )
+    assert r.status_code == 204
+
     # Nobody can change or remove the owner through member endpoints.
     owner_membership = owner["memberships"][0]["membership_id"]
-    r = client.delete(
-        f"{API}/organizations/{org}/members/{owner_membership}", headers=bearer(admin)
+    for call in (
+        lambda: client.delete(
+            f"{API}/organizations/{org}/members/{owner_membership}",
+            headers=bearer(admin),
+        ),
+        lambda: client.patch(
+            f"{API}/organizations/{org}/members/{owner_membership}",
+            json={"role": "agent"},
+            headers=bearer(admin),
+        ),
+    ):
+        assert call().status_code == 403
+    # Nor make someone owner.
+    admin_id = admin["memberships"][0]["membership_id"]
+    r = client.patch(
+        f"{API}/organizations/{org}/members/{admin_id}",
+        json={"role": "owner"},
+        headers=bearer(owner),
     )
-    assert r.status_code == 403
+    assert r.status_code in (403, 422)
+
+    # Members don't edit themselves through the member endpoints.
+    r = client.patch(
+        f"{API}/organizations/{org}/members/{admin_id}",
+        json={"role": "agent"},
+        headers=bearer(admin),
+    )
+    assert r.status_code == 422
+
+
+def test_agents_see_member_names_but_not_emails(
+    client: TestClient, sent_emails: list[dict[str, str]]
+) -> None:
+    owner = signup(client)
+    org = _org(owner)
+    agent = _member_join(client, owner, sent_emails)
+    as_agent = client.get(f"{API}/organizations/{org}/members", headers=bearer(agent))
+    assert as_agent.status_code == 200
+    assert all(m["email"] is None for m in as_agent.json())
+    assert all(m["name"] for m in as_agent.json())
+    as_owner = client.get(f"{API}/organizations/{org}/members", headers=bearer(owner))
+    assert all(m["email"] for m in as_owner.json())
+
+
+def test_organization_shows_plan_and_limits_by_role(
+    client: TestClient, sent_emails: list[dict[str, str]]
+) -> None:
+    owner = signup(client)
+    org = _org(owner)
+    agent = _member_join(client, owner, sent_emails)
+    mine = client.get(f"{API}/organizations/{org}", headers=bearer(owner)).json()
+    assert mine["plan"]["name"]
+    assert "agents" in mine["limits"]
+    theirs = client.get(f"{API}/organizations/{org}", headers=bearer(agent)).json()
+    assert theirs["plan"]["name"] == mine["plan"]["name"]
+    assert theirs["limits"] is None
 
 
 def test_role_change_applies_immediately(

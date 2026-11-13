@@ -10,6 +10,8 @@ from redis import asyncio as aioredis
 from slowapi.errors import RateLimitExceeded
 
 from app.api.v1.router import api_router as api_v1_router
+from app.api.widget_ws import router as widget_ws_router
+from app.core import metrics
 from app.core.config import settings
 from app.core.db import sessionmanager
 from app.core.exceptions import APIError, api_error_handler, validation_error_handler
@@ -74,6 +76,30 @@ async def rate_limit_exceed_handler(request: Request, exc: RateLimitExceeded):
     return response
 
 
+WIDGET_PREFIX = f"{settings.API_V1_PREFIX}/widget"
+WIDGET_MAX_BODY_BYTES = 64 * 1024
+
+
+@app.middleware("http")
+async def widget_body_limit(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Visitor requests are capped at 64 KB (docs/integrations/WEBSITE_CHAT.md §3)."""
+    if request.url.path.startswith(WIDGET_PREFIX):
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > WIDGET_MAX_BODY_BYTES:
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": "payload_too_large",
+                        "message": "Request body is limited to 64 KB",
+                    }
+                },
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def logging_middleware(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -93,6 +119,20 @@ async def logging_middleware(
     return response
 
 
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics(request: Request) -> Response:
+    """Prometheus scrape endpoint (docs/ai/AI_ARCHITECTURE.md §8). Disabled with
+    METRICS_ENABLED=false; protected by METRICS_TOKEN when set."""
+    if not settings.METRICS_ENABLED:
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    if (
+        settings.METRICS_TOKEN
+        and request.headers.get("authorization") != f"Bearer {settings.METRICS_TOKEN}"
+    ):
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+    return Response(metrics.render(), media_type="text/plain; version=0.0.4")
+
+
 @app.get("/", tags=["Health"], include_in_schema=False)
 async def root() -> str:
     """Unversioned liveness probe for load balancers."""
@@ -100,3 +140,4 @@ async def root() -> str:
 
 
 app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
+app.include_router(widget_ws_router)

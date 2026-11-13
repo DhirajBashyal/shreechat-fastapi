@@ -69,6 +69,54 @@ class OrganizationSuspendedError(APIError):
     message = "Organization is suspended"
 
 
+class OrganizationPendingDeletionError(APIError):
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "organization_pending_deletion"
+    message = "Organization is scheduled for deletion"
+
+
+class PasswordConfirmationError(APIError):
+    """Wrong password on a re-authenticated action (transfer ownership,
+    delete organization). Not 401: the session itself is still valid."""
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "password_incorrect"
+    message = "Password is incorrect"
+
+
+class PlanLimitReachedError(APIError):
+    status_code = status.HTTP_402_PAYMENT_REQUIRED
+    code = "plan_limit_reached"
+    message = "Your plan limit has been reached"
+
+    def __init__(self, limit: str, maximum: int) -> None:
+        super().__init__(
+            f"Your plan allows at most {maximum} {limit}",
+            extra={"limit": limit, "max": maximum},
+        )
+
+
+class MfaRequiredError(APIError):
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "mfa_required"
+    message = "Multi-factor authentication is required"
+
+
+class EmbeddingUnavailableError(APIError):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    code = "embedding_unavailable"
+    message = "The embedding service is unavailable"
+
+
+class FeatureNotInPlanError(APIError):
+    status_code = status.HTTP_402_PAYMENT_REQUIRED
+    code = "feature_not_in_plan"
+    message = "Your plan doesn't include this feature"
+
+    def __init__(self, feature: str) -> None:
+        super().__init__(extra={"feature": feature})
+
+
 class NotFoundError(APIError):
     status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"

@@ -96,9 +96,11 @@ Errors: `401 invalid_credentials` (generic), `401 mfa_required` (with `mfa_token
 | GET | `/organizations` | Organizations the user belongs to | member | — |
 | GET | `/organizations/{org}` | Details, plan, limits, usage | member | O |
 | PATCH | `/organizations/{org}` | Name, locale, timezone, settings | `organization.manage` | O |
-| DELETE | `/organizations/{org}` | Schedule deletion (owner, password re-auth) | owner | O |
-| POST | `/organizations/{org}/transfer-ownership` | Make another admin the owner | owner | O |
-| GET | `/organizations/{org}/members` | Members with role and availability | member | O |
+| DELETE | `/organizations/{org}` | Schedule deletion `{password}`: status `pending_deletion`, purge after 30 days | owner | O |
+| POST | `/organizations/{org}/restore` | Cancel a scheduled deletion (within the grace period) | owner | O (also while pending deletion) |
+| POST | `/organizations/{org}/transfer-ownership` | Make an administrator the owner `{membership_id, password}`; old owner becomes administrator | owner | O |
+| POST | `/organizations/{org}/leave` | Leave the organization (not the owner: `422 owner_cannot_leave`) | member | O |
+| GET | `/organizations/{org}/members` | Members with role and availability (`email` only with `member.manage`) | member | O |
 | POST | `/organizations/{org}/invitations` | Invite by email `{email, role, custom_role_id?, workspace_ids[]}` | `member.manage` | O |
 | GET | `/organizations/{org}/invitations` | Pending invitations | `member.manage` | O |
 | DELETE | `/organizations/{org}/invitations/{id}` | Revoke invitation | `member.manage` | O |
@@ -118,7 +120,9 @@ POST /api/v1/organizations/00000000-0000-0000-0000-00000000b001/invitations
 ```json
 { "id": "6a1e…", "email": "new.agent@demo.test", "role": "agent", "expires_at": "2026-11-15T10:00:00.000Z", "accepted_at": null }
 ```
-Errors: `402 plan_limit_reached` (agents), `409 conflict` (already a member / pending invite), `422` (custom role on non-agent).
+Errors: `402 plan_limit_reached` (agents; every member and pending invitation is a seat), `403 permission_denied` (inviting a role above your own, or `owner`), `409 conflict` (already a member / pending invite), `422` (custom role on non-agent).
+
+Member rules (docs/12 §4): owners and administrators manage administrators and agents; nobody edits or removes the owner or their own membership (`422`). Removing a member unassigns their open conversations, removes them from inboxes and teams and revokes their personal API tokens. Owner actions that need the password return `403 password_incorrect` on a wrong one. Every organization and workspace route returns `403 organization_suspended` / `403 organization_pending_deletion` when the organization isn't active (after the membership check, so non-members still get `404`).
 
 ## 4. Workspaces — `/api/v1/organizations/{org}/workspaces`, `/api/v1/workspaces/{ws}`
 
@@ -235,12 +239,15 @@ Errors: `422 invalid_credentials` (token can't read the number), `422 number_not
 
 | Method | URL | Purpose | Permission |
 |---|---|---|---|
-| POST | `/workspaces/{ws}/channels/web-widget` | Create `{inbox_name, website_url, allowed_origins[], widget_color, welcome_title, ...}` | `inbox.manage` |
-| PATCH | `/workspaces/{ws}/inboxes/{id}/web-widget` | Update widget settings | `inbox.manage` |
-| POST | `/workspaces/{ws}/inboxes/{id}/web-widget/identity-secret/rotate` | New HMAC secret (shown once) | `inbox.manage` |
-| GET | `/workspaces/{ws}/inboxes/{id}/web-widget/snippet` | Embed code | `inbox.manage` |
+| POST | `/workspaces/{ws}/channels/web-widget` | Create inbox + widget `{name, website_url, allowed_origins[], widget_color, welcome_title, welcome_tagline, reply_time, pre_chat_form_*, identity_verification_required, feature_flags[], greeting_*, working_hours*, timezone, out_of_office_message, allow_messages_after_resolved, lock_to_single_conversation}` → `201` settings + `identity_secret` (shown once) (implemented) | `inbox.manage` |
+| GET | `/workspaces/{ws}/inboxes/{id}/web-widget` | Settings, `status`, `website_token` and `embed_script` (the embed code) (implemented) | `inbox.manage` |
+| PATCH | `/workspaces/{ws}/inboxes/{id}/web-widget` | Update widget settings; `null` clears texts (implemented) | `inbox.manage` |
+| POST | `/workspaces/{ws}/inboxes/{id}/web-widget/identity-secret/rotate` | New HMAC secret `{identity_secret}` (shown once) (implemented) | `inbox.manage` |
+| DELETE | `/workspaces/{ws}/inboxes/{id}/web-widget` | Disconnect: the route is deleted, `/widget/config` answers `404`, the inbox and its history stay (implemented) | `inbox.manage` |
 
-The public widget API is documented in [../integrations/WEBSITE_CHAT.md](../integrations/WEBSITE_CHAT.md#3-server-api-apiv1widget).
+Errors: `402 plan_limit_reached` (`limit: "inboxes"`), `422` invalid origin (`https://shop.example.com` or `https://*.example.com`), colour or time zone.
+
+The public widget API (`/api/v1/widget/*`, implemented) and the visitor socket `/ws/widget` are documented in [../integrations/WEBSITE_CHAT.md](../integrations/WEBSITE_CHAT.md#3-server-api-apiv1widget); frontend contract in [../frontend-implamentation/08_WEBSITE_WIDGET.md](../frontend-implamentation/08_WEBSITE_WIDGET.md).
 
 ## 13. Contacts — `/api/v1/workspaces/{ws}/contacts`
 
@@ -428,16 +435,19 @@ Request body example in [../database/TABLE_DOCUMENTATION.md](../database/TABLE_D
 | Method | URL | Purpose | Permission |
 |---|---|---|---|
 | GET | `/organizations/{org}/ai-credentials` | List (label, provider, `api_key_last4`) | `ai.credentials.manage` |
-| POST | `/organizations/{org}/ai-credentials` | `{provider, label, api_key, base_url?}` (validated with a test call) | `ai.credentials.manage` + feature `byo_llm_keys` |
+| POST | `/organizations/{org}/ai-credentials` | `{provider: openai\|gemini\|anthropic, label, api_key}`; key encrypted (Fernet), only `api_key_last4` ever returned. (Test call on save: 🔜) | `ai.credentials.manage` + feature `byo_llm_keys` (`402 feature_not_in_plan`) |
+| GET | `/ai-models` | Allowed models (`config/llm_models.yaml`) with `selectable` (false after `deprecated_at`), platform provider, default chat model, `platform_configured` (server has an AI key) | logged in |
 | DELETE | `/organizations/{org}/ai-credentials/{id}` | | `ai.credentials.manage` |
 | GET | `/ai/models` | Allow-listed models for the plan | member |
 | GET | `/workspaces/{ws}/ai-agents` | List | member |
-| POST | `/workspaces/{ws}/ai-agents` | Create agent config | `ai.agent.manage` + feature `ai_agent` |
-| GET/PATCH/DELETE | `/workspaces/{ws}/ai-agents/{id}` | | `ai.agent.manage` |
+| POST | `/workspaces/{ws}/ai-agents` | Create agent config. Defaults: actions `reply, handoff`, tools `knowledge_search`, default handoff policy/guardrails/persona. Feature `ai_agent` is checked when the agent runs | `ai.agent.manage` |
+| GET | `/workspaces/{ws}/ai-agents/{id}` | `system_prompt`, `persona`, `guardrails`, `handoff_policy`, `tool_settings` are `null` without `ai.agent.manage` | member |
+| PATCH/DELETE | `/workspaces/{ws}/ai-agents/{id}` | Changes audited with old/new values (`ai_agent.updated`, `.tools_changed`, `.actions_changed`) | `ai.agent.manage` (+ escalation rules) |
 | PUT | `/workspaces/{ws}/ai-agents/{id}/inboxes` | `{inboxes: [{inbox_id, mode}]}` | `ai.agent.manage` |
 | PUT | `/workspaces/{ws}/ai-agents/{id}/knowledge-bases` | `{knowledge_base_ids: []}` | `ai.agent.manage` |
-| POST | `/workspaces/{ws}/ai-agents/{id}/playground` | `{messages: [...]}` → test reply with sources, no side effects | `ai.playground.use` |
-| GET | `/workspaces/{ws}/conversations/{id}/ai-runs` | AI activity for a conversation | visible + `ai.activity.view` |
+| POST | `/workspaces/{ws}/ai-agents/{id}/playground` | `{message, history?: [{role, content}], customer_verification?: none\|channel\|verified, customer_name?}` → `{outcome, reply, handoff_reason, intent, route, citations, context_sufficient, guardrail_flags, tool_calls, usage, errors}`. Runs the real graph; nothing is sent or saved. `503 ai_provider_not_configured` without a key | `ai.playground.use` |
+| GET | `/workspaces/{ws}/conversations/{id}/ai-runs` | Last 50 runs: status, intent, route, handoff reason, tokens, latency, guardrail flags, sources (chunk text only with `ai.knowledge.manage`), tool calls with policy decision | visible + `ai.activity.view` |
+| POST | `/workspaces/{ws}/conversations/{id}/ai/pause` · `/ai/resume` | Pause (`ai_active=false`) / return to AI (`ai_active=true`, unassigned, `pending`) → `{conversation_id, ai_active, status}` | visible + `conversation.ai_control` |
 
 ```http
 POST /api/v1/workspaces/{ws}/ai-agents
@@ -454,7 +464,7 @@ POST /api/v1/workspaces/{ws}/ai-agents
   "max_turns_before_handoff": 8
 }
 ```
-Errors: `422 model_not_allowed`, `402 feature_not_in_plan`.
+Errors: `422 model_not_allowed`, `handoff_required`, `action_not_supported`, `tool_not_supported`, `policy_cannot_be_relaxed`, `label_not_in_workspace`, `validation_error` (handoff policy / guardrails / persona fields); `403 permission_denied` with `permission: custom_attribute.manage` (enabling `customer_info`) or `contact.manage` (allowing `update_contact`); `404` (credential / inbox / knowledge base not in this organization or workspace); `409` (inbox already has another AI agent).
 
 The body also accepts `allowed_actions` and `tool_settings`; permission escalation rules and their errors are in [../ai/AI_ROLES_AND_PERMISSIONS.md](../ai/AI_ROLES_AND_PERMISSIONS.md#6-api-changes).
 
@@ -462,13 +472,17 @@ The body also accepts `allowed_actions` and `tool_settings`; permission escalati
 
 | Method | URL | Purpose | Permission |
 |---|---|---|---|
-| GET/POST | `/knowledge-bases` | List / create `{name, description}` | member / `ai.knowledge.manage` |
-| GET/PATCH/DELETE | `/knowledge-bases/{id}` | | `ai.knowledge.manage` |
-| GET | `/knowledge-bases/{id}/documents?status=` | Documents with status/error | `ai.knowledge.manage` |
-| POST | `/knowledge-bases/{id}/documents` | `{source_type: url\|file\|text\|faq, source_url?, file_id?, title?, text?, faq?: [{q,a}], metadata?: {category}}` → 202 | `ai.knowledge.manage` |
-| POST | `/knowledge-bases/{id}/documents/{doc_id}/resync` | Re-ingest (202) | `ai.knowledge.manage` |
+| GET/POST | `/knowledge-bases` | List (with document/chunk counts) / create `{name, description}` | member / `ai.knowledge.manage` |
+| GET | `/knowledge-bases/{id}` | One knowledge base | member |
+| PATCH/DELETE | `/knowledge-bases/{id}` | Rename / delete (soft; chunks removed) | `ai.knowledge.manage` |
+| GET | `/knowledge-bases/{id}/documents` | Documents with status/error/chunk count | `ai.knowledge.manage` |
+| POST | `/knowledge-bases/{id}/documents` | `{source_type: text\|faq\|url, title?, text?, faq?: [{question, answer}], url?, category: general\|policy}` → **201**, ingested inline (status `ready` or `failed` + `error`). `file` → 🔜 | `ai.knowledge.manage` |
+| POST | `/knowledge-bases/{id}/documents/{doc_id}/resync` | Re-fetch and re-embed | `ai.knowledge.manage` |
 | DELETE | `/knowledge-bases/{id}/documents/{doc_id}` | Delete document + chunks | `ai.knowledge.manage` |
-| POST | `/knowledge-bases/{id}/search` | `{query}` → top chunks with scores (debugging) | `ai.knowledge.manage` |
+| GET | `/knowledge-bases/{id}/documents/{doc_id}/chunks` | Chunks as embedded (debugging) | `ai.knowledge.manage` |
+| POST | `/workspaces/{ws}/knowledge-search` | `{query, knowledge_base_ids?, policy_only?, top_n?}` → hits with similarity/keyword rank, `context_sufficient`, the `context_block` the AI would get | `ai.knowledge.manage` |
+
+Errors: `422 url_not_allowed` (non-public / non-http(s) URL), `409` (URL already in the knowledge base), `503 embedding_unavailable` (search while the embedding service is down).
 
 ## 24. Webhooks — `/api/v1/workspaces/{ws}/webhooks`
 
@@ -535,15 +549,17 @@ Date ranges are limited to 400 days. Times are computed in the workspace timezon
 
 | Method | URL | Purpose |
 |---|---|---|
-| GET | `/platform/organizations?q&status` | Search tenants |
-| GET/PATCH | `/platform/organizations/{org}` | Status (suspend/activate), limits override, feature flags |
+| GET | `/platform/stats` | Organization counts by status (implemented) |
+| GET | `/platform/organizations?q&status&limit&offset` | Search tenants: name, slug, owner email (implemented) |
+| GET/PATCH | `/platform/organizations/{org}` | Status (suspend/activate), limits override, feature flags (implemented) |
+| GET/POST/DELETE | `/platform/admins[/{user_id}]` | List, grant by email, revoke (not yourself) (implemented) |
 | GET/PATCH | `/platform/users/{id}` | Lock user, reset MFA |
 | GET/POST/PATCH | `/platform/plans[/{id}]` | Plans |
 | GET | `/platform/inbound-events?state=dead&provider` | Dead-letter webhook events |
 | POST | `/platform/inbound-events/{id}/replay` | Reprocess |
 | GET | `/platform/health` | Queue depths, outbox lag, DB/Redis status |
 
-All require `require_platform_admin()` (MFA) and are audited.
+All require `require_platform_admin()` (MFA) and are audited. Non-admins get `404`. Until MFA is built, the platform API answers `403 mfa_required` outside `ENV=local/test` (docs/12 §7.2).
 
 ## 28. Provider webhooks (public)
 

@@ -4,6 +4,20 @@ Each node is an `async def node(state: AgentState, config: RunnableConfig) -> di
 
 Legend: **R** = required (every run), **O** = optional (router/tool-enabled), **C** = conditional (only on certain outcomes).
 
+## Implementation status
+
+All 16 nodes are implemented in `app/ai/graph/nodes.py` (one module instead of one file per node) and tested with a scripted fake LLM (`tests/test_ai_agent.py`). Differences from the descriptions below:
+
+| Node | Difference |
+|---|---|
+| `input_validation` | Stickers/reactions and attachment descriptions aren't special-cased yet (empty text is discarded) |
+| `tenant_context` | ✅ also checks inbox working hours (`outside_hours`) |
+| `customer_identification` | `language_hint` not computed |
+| `product_search`, `order_lookup` | Return `integration_not_configured` until commerce integrations exist (R2) |
+| `rag` | No reranker yet |
+| `guardrails_validation` | Length, prompt leak (8-gram overlap), PII of others (emails/phones not the contact's or in the context, Luhn-valid card numbers), blocked topics (keyword match, not a classifier), human impersonation, grounding (LLM judge for policy intents or `require_citations`). Provider moderation ✅ (OpenAI); language detection 🔜. Token budget exceeded → handoff `token_budget` |
+| `memory_persistence` | Summarises inline (no queue yet), after the reply is delivered |
+
 ## Summary
 
 | # | Node | Kind | Uses LLM | Reads | Writes |
@@ -134,7 +148,7 @@ Same as `knowledge_retrieval`, restricted to documents with `metadata.category =
 | | |
 |---|---|
 | **Receives** | `customer`, `conversation.contact_id` |
-| **Does** | Loads AI-visible custom attributes (plan, signup date), labels, and summaries of the last 3 resolved conversations (from their AI sessions or a stored resolution summary) |
+| **Does** | Loads AI-visible custom attributes (plan, signup date), labels, and summaries of the last 5 resolved conversations (from their AI sessions or a stored resolution summary) |
 | **Returns** | `ToolResult(data={"attributes": {...}, "recent_topics": [...]})` |
 
 ## 11. `rag` (optional; runs when any tool node ran)

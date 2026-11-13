@@ -59,6 +59,10 @@ class Label(Base):
     show_on_sidebar: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )
+    # Can be set by the website widget SDK (converse.setLabel).
+    widget_settable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()
 

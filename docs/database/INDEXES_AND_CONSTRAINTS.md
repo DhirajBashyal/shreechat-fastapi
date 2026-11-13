@@ -29,7 +29,7 @@ Exported from the tested database (`pg_indexes`, `pg_constraint`). The reasoning
 - Stable value sets are PostgreSQL `ENUM` types (statuses, directions). Value sets that will grow (assignment reasons, AI providers, usage metrics) are `CHECK (… IN (…))`, which is easier to change in a migration.
 - Rules that depend on other rows or on configuration (plan limits, custom attribute validation, assignment eligibility) are enforced in services, not the database.
 
-## 3. All indexes (209, including primary keys and unique constraints)
+## 3. All indexes (210, including primary keys and unique constraints)
 
 ### `ai_agent_inboxes`
 
@@ -385,6 +385,7 @@ Exported from the tested database (`pg_indexes`, `pg_constraint`). The reasoning
 
 | Index | Definition |
 |---|---|
+| `org_memberships_one_owner_uniq` | `UNIQUE USING btree (organization_id) WHERE (role = 'owner'::membership_role)` |
 | `org_memberships_org_id_uniq` | `UNIQUE USING btree (organization_id, id)` |
 | `org_memberships_user_idx` | `USING btree (user_id)` |
 | `org_memberships_user_uniq` | `UNIQUE USING btree (organization_id, user_id)` |
@@ -570,7 +571,7 @@ Exported from the tested database (`pg_indexes`, `pg_constraint`). The reasoning
 | `workspaces_pkey` | `UNIQUE USING btree (id)` |
 | `workspaces_slug_per_org_uniq` | `UNIQUE USING btree (organization_id, slug) WHERE (deleted_at IS NULL)` |
 
-## 4. All CHECK constraints (49)
+## 4. All CHECK constraints (50)
 
 | Table | Constraint | Definition |
 |---|---|---|
@@ -608,6 +609,7 @@ Exported from the tested database (`pg_indexes`, `pg_constraint`). The reasoning
 | `messages` | `messages_content_len_chk` | `CHECK (((content IS NULL) OR (char_length(content) <= 150000)))` |
 | `messages` | `messages_private_outgoing_chk` | `CHECK (((NOT is_private) OR (direction = 'outgoing'::message_direction)))` |
 | `messages` | `messages_sender_chk` | `CHECK ((((sender_kind = 'user'::sender_kind) AND (sender_user_id IS NOT NULL)) OR ((sender_kind = 'contact'::sender_kind) AND (sender_contact_id IS NOT NULL)) OR ((sender_kind = 'ai_agent'::sender_kind) AND (sender_ai_agent_id IS NOT NULL)) OR (sender_kind = ANY (ARRAY['system'::sender_kind, 'automation'::sender_kind]))))` |
+| `organization_memberships` | `org_memberships_custom_role_agent_chk` | `CHECK (((custom_role_id IS NULL) OR (role = 'agent'::membership_role)))` |
 | `organizations` | `organizations_settings_is_object` | `CHECK ((jsonb_typeof(settings) = 'object'::text))` |
 | `reporting_events` | `reporting_events_name_chk` | `CHECK (((name)::text = ANY ((ARRAY['first_response'::character varying, 'reply_time'::character varying, 'conversation_resolved'::character varying, 'conversation_opened'::character varying, 'conversation_bot_handoff'::character varying, 'conversation_bot_resolved'::character varying])::text[])))` |
 | `stored_files` | `stored_files_backend_chk` | `CHECK (((storage_backend)::text = ANY ((ARRAY['local'::character varying, 's3'::character varying])::text[])))` |

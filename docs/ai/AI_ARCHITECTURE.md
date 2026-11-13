@@ -4,6 +4,40 @@ The AI agent answers customers on inboxes where it's enabled, uses the tenant's 
 
 Related: [LANGGRAPH_WORKFLOW.md](LANGGRAPH_WORKFLOW.md) (graph + state + edges), [LANGGRAPH_NODES.md](LANGGRAPH_NODES.md) (every node's input/output), [RAG_ARCHITECTURE.md](RAG_ARCHITECTURE.md), [MEMORY_MANAGEMENT.md](MEMORY_MANAGEMENT.md), [HUMAN_HANDOFF.md](HUMAN_HANDOFF.md), [AI_ROLES_AND_PERMISSIONS.md](AI_ROLES_AND_PERMISSIONS.md) (who may configure the AI, what the AI may do, what customers may obtain).
 
+## Implementation status
+
+Code lives in `app/ai/` (the `converse/ai/...` paths below are the original design layout). Everything is covered by `tests/test_ai_agent.py` and `tests/test_ai_architecture.py` (scripted fake LLM, no key needed).
+
+| Section | Part | Status | Code |
+|---|---|---|---|
+| §2 | AI writes only through conversation services; humans win (`ai_active`, no assignee) | ✅ | `app/services/conversation_ai.py`, `DbRepo.deliver` |
+| §2.5 | Deadline 45 s, per-run token budget (`token_budget` handoff), turn limit, monthly quota, per-org concurrency | ✅ | `runner.py`, `graph/edges.py` (`over_budget`), `queue.py` |
+| §3 | `should_run`: incoming, not blocked, autonomous active agent, AI active + unassigned, session active, plan feature `ai_agent`, quota | ✅ | `app/ai/handlers.py` |
+| §3 | Working hours (`handoff_policy.outside_hours = handoff` → handoff `outside_hours`) | ✅ | `app/ai/working_hours.py`, `tenant_context` |
+| §3 | Trigger: 2.5 s debounce (last message wins), one run per conversation (Redis lock), per-org concurrency (re-scheduled, not dropped) | ✅ Redis-backed `ai` queue + `make ai-worker` (instead of Celery, which isn't in the stack) | `app/ai/queue.py`, `app/jobs/ai_worker.py` |
+| §3 | Enqueue from the `message.created` outbox event | 🔜 with the inbound pipeline / outbox dispatcher (Phase 4); today `make ai-reply MESSAGE=… QUEUE=1` | |
+| §3 | Runner: `ai_runs` unique per trigger, `ai_tool_calls`, usage, fallback handoff | ✅ | `app/ai/runner.py` |
+| §4 | Providers: OpenAI, Gemini, Anthropic via LangChain; tenant key or platform key. (Azure OpenAI and self-hosted OpenAI-compatible servers are not offered; the database check still allows them for later) | ✅ | `app/ai/providers.py` |
+| §4 | Model allow-list `config/llm_models.yaml` with `deprecated_at`; API validates `chat_model` / `classifier_model`; served to the UI by `GET /ai-models` | ✅ | `model_allowed()` |
+| §4 | Bring-your-own-key: encrypted, doesn't count against the plan quota | ✅ | `app/core/crypto.py`, `DbRepo.persist` |
+| §4 | Changing a KB's embedding model + re-embedding job | 🔜 one model (local service) for now | |
+| §5 | All tenant settings; platform prompt versioned in code (`PROMPT_VERSION` on every usage entry); data blocks separate from instructions | ✅ | `app/ai/prompts.py` |
+| §5 | `assist_only` mode | 🔜 R2 | |
+| §6 | `knowledge_search`, `policy_search`, `customer_info` (AI-visible attributes, labels, last 5 resolved conversations' summaries) | ✅ | |
+| §6 | `product_search`, `order_lookup` | 🔜 R2 (nodes return `integration_not_configured`) | |
+| §7 | Prompt injection: data blocks, tool allow-list, validated arguments, writes only via delivery/handoff | ✅ | |
+| §7 | Cross-tenant: retrieval filtered by workspace + agent KBs; per-tenant repo | ✅ · RLS policies 🔜 Phase 3 | |
+| §7 | Other customers: `customer_info` only for the conversation's contact | ✅ | |
+| §7 | Grounding check (policy intents or `require_citations`) | ✅ | `guardrails_validation` |
+| §7 | PII redaction before the provider (`guardrails.pii_redaction`: Luhn-valid cards, IBANs, US SSN format) | ✅ | `prompts.redact_pii` |
+| §7 | Model outage: `RetryPolicy` (3 attempts, jitter) then handoff `ai_unavailable` | ✅ | |
+| §7 | Moderation of the reply | ✅ OpenAI moderation endpoint (`omni-moderation-latest`) when the provider is OpenAI; other providers rely on the remaining guardrails | `LangChainLLM.moderate` |
+| §8 | `ai_runs`, `ai_tool_calls`, `GET …/ai-runs` | ✅ | |
+| §8 | OpenTelemetry span per node `ai.node.<name>` with run id and token counts | ✅ (no-op until an OTel SDK/exporter is configured) | `graph/build.py` (`traced`) |
+| §8 | Metrics `ai_runs_total{status}`, `ai_handoff_total{reason}`, `ai_run_latency_seconds`, `ai_tokens_total{model}` at `GET /metrics` | ✅ per process (`METRICS_TOKEN` to protect) | `app/core/metrics.py` |
+| §8 | LangSmith tracing off unless `AI_TRACING=true` | ✅ | `providers.py` |
+| §9 | Evaluation harness (internal): recall@8, sufficiency, answer pass rate, handoff rate, unsupported claims, refusal correctness | ✅ `make ai-eval WS=… FILE=… [AGENT=…]` | `app/jobs/ai_eval.py` |
+
 ## 1. Chatwoot reference (capability level only)
 
 Chatwoot's Enterprise "Captain" (licensed separately) provides: assistants linked to inboxes (`captain_inboxes`), documents crawled into FAQ pairs with `vector(1536)` embeddings, a job that generates the reply for `pending` conversations (`Captain::Conversation::ResponseBuilderJob`), handoff to humans (`bot_handoff!`), discarding a reply when a newer customer message arrived, and model selection from `config/llm.yml`. OSS Chatwoot integrates external bots through `agent_bots` webhooks. Converse implements comparable capabilities independently.
@@ -70,8 +104,8 @@ class ProviderFactory:
     def for_agent(self, agent: AIAgentView) -> LLMProvider:
         credential = self._credentials.decrypt(agent.provider_credential_id) if agent.provider_credential_id else self._platform
         match credential.provider:
-            case "openai" | "azure_openai" | "openai_compatible":
-                return OpenAIProvider(api_key=credential.api_key, base_url=credential.base_url)
+            case "openai":
+                return OpenAIProvider(api_key=credential.api_key)
             case "anthropic":
                 return AnthropicProvider(api_key=credential.api_key)
             case "gemini":

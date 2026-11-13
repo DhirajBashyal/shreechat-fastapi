@@ -21,7 +21,8 @@ def test_signup_creates_org_workspace_owner(client: TestClient) -> None:
     assert m["organization_name"] == "Shree Traders"
     assert m["role"] == "owner"
     assert "billing.manage" in m["permissions"]
-    assert [w["slug"] for w in m["workspaces"]] == ["main"]
+    assert [w["slug"] for w in m["workspaces"]] == ["support"]
+    assert m["organization_status"] == "active"
 
 
 def test_signup_duplicate_email_is_409(client: TestClient) -> None:

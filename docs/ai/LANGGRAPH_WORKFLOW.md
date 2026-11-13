@@ -2,6 +2,18 @@
 
 The agent is a compiled `StateGraph`. This document defines the state, the graph, the conditional edges, error handling, and how a run starts and ends. Node details are in [LANGGRAPH_NODES.md](LANGGRAPH_NODES.md).
 
+## Implementation status
+
+| Part | Status | Code |
+|---|---|---|
+| State with reducers (`tool_results`, `tool_calls`, `errors`, `usage`), views instead of ORM objects | ✅ | `app/ai/graph/state.py` |
+| Graph, conditional edges, parallel tool fan-out, regenerate loop (max 2 retries) | ✅ | `app/ai/graph/build.py`, `edges.py` |
+| `RetryPolicy` on LLM nodes (429 / 5xx / timeouts) | ✅ | `LLM_RETRY` |
+| Runner: idempotent `ai_runs`, 45 s deadline, `recursion_limit=25`, failure → fallback handoff | ✅ | `app/ai/runner.py` |
+| Dependencies through `config["configurable"]["deps"]`; live (`DbRepo`) and playground (`PlaygroundRepo`, writes nothing) | ✅ | `app/ai/graph/repo.py` |
+| Debounce 2.5 s (last message wins), per-conversation Redis lock, per-org concurrency | ✅ Redis `ai` queue + `make ai-worker` (no Celery in the stack) | `app/ai/queue.py` |
+| Per-node OpenTelemetry spans | ✅ | `app/ai/graph/build.py` |
+
 ## 1. The graph
 
 ```mermaid

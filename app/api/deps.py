@@ -19,9 +19,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_db
 from app.core.exceptions import (
+    MfaRequiredError,
     NotFoundError,
+    OrganizationPendingDeletionError,
     OrganizationSuspendedError,
     PermissionDeniedError,
     SessionRevokedError,
@@ -36,6 +39,7 @@ from app.services.access import (
     can_access_workspace,
     resolve_membership,
 )
+from app.services.platform import is_platform_admin
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
@@ -89,9 +93,17 @@ def _context(
     resolved: ResolvedMembership,
     principal: Principal,
     workspace_id: uuid.UUID | None,
+    *,
+    allow_pending_deletion: bool = False,
 ) -> TenantContext:
-    if resolved.organization.status != OrgStatus.ACTIVE:
+    # Checked after membership, so non-members still get a 404 and can't
+    # learn that an organization exists or is suspended.
+    status = resolved.organization.status
+    if status == OrgStatus.SUSPENDED:
         raise OrganizationSuspendedError()
+    if status == OrgStatus.PENDING_DELETION and not allow_pending_deletion:
+        # Only the owner resolves a membership here (others get 404).
+        raise OrganizationPendingDeletionError()
     m = resolved.membership
     return TenantContext(
         organization_id=resolved.organization.id,
@@ -135,6 +147,19 @@ async def get_workspace_context(
     return ctx
 
 
+async def get_org_context_for_restore(
+    organization_id: uuid.UUID, current: CurrentUserDep, session: DbSession
+) -> TenantContext:
+    """Org context that also resolves while the organization is pending
+    deletion. Used only by the owner-only restore endpoint."""
+    resolved = await resolve_membership(session, current.user.id, organization_id)
+    if resolved is None:
+        raise NotFoundError()
+    ctx = _context(resolved, current.principal, None, allow_pending_deletion=True)
+    await bind_tenant(session, ctx.organization_id)
+    return ctx
+
+
 OrgContext = Annotated[TenantContext, Depends(get_org_context)]
 WorkspaceContext = Annotated[TenantContext, Depends(get_workspace_context)]
 
@@ -164,10 +189,49 @@ def require_permission(
     return org_checker
 
 
+def _ensure_owner(ctx: TenantContext) -> TenantContext:
+    if ctx.membership_role != MembershipRole.OWNER:
+        raise PermissionDeniedError("owner")
+    return ctx
+
+
 def require_owner() -> Callable[..., Awaitable[TenantContext]]:
+    """Owner-only actions check the role directly; they aren't permission
+    codes (docs/12 §4, "Owner-only actions")."""
+
     async def checker(ctx: OrgContext) -> TenantContext:
-        if ctx.membership_role != MembershipRole.OWNER:
-            raise PermissionDeniedError("owner")
-        return ctx
+        return _ensure_owner(ctx)
 
     return checker
+
+
+async def require_owner_for_restore(
+    ctx: Annotated[TenantContext, Depends(get_org_context_for_restore)],
+) -> TenantContext:
+    return _ensure_owner(ctx)
+
+
+OwnerContext = Annotated[TenantContext, Depends(require_owner())]
+OwnerRestoreContext = Annotated[TenantContext, Depends(require_owner_for_restore)]
+
+
+async def require_platform_admin(
+    current: CurrentUserDep, session: DbSession
+) -> CurrentUser:
+    """/api/v1/platform/*: our staff only (docs/12 §7).
+
+    Not a platform admin → 404, so the platform API can't be discovered.
+    MFA is mandatory for platform admins by design, and MFA isn't built yet:
+    until it is, the platform API only works with ENV=local/test.
+    """
+    if not await is_platform_admin(session, current.user.id):
+        raise NotFoundError()
+    if not settings.is_local:
+        raise MfaRequiredError(
+            "Platform admin requires MFA, which isn't available yet; "
+            "the platform API is disabled outside local/test"
+        )
+    return current
+
+
+PlatformAdminDep = Annotated[CurrentUser, Depends(require_platform_admin)]

@@ -7,6 +7,11 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from app.models.enums import AvailabilityStatus, MembershipRole, OrgStatus
 
 
+class PlanRead(BaseModel):
+    code: str | None
+    name: str | None
+
+
 class OrganizationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -17,6 +22,22 @@ class OrganizationRead(BaseModel):
     locale: str
     timezone: str
     created_at: datetime
+    # Set while status = pending_deletion: when the organization is purged.
+    deletion_scheduled_at: datetime | None = None
+    # Only on GET /organizations/{org}. Every member sees the plan name;
+    # limits are null for agents (docs/12 §3). A missing limit key = unlimited.
+    plan: PlanRead | None = None
+    limits: dict[str, Any] | None = None
+
+
+class PasswordConfirmation(BaseModel):
+    """Re-entered password for destructive owner actions."""
+
+    password: str = Field(min_length=1, max_length=128)
+
+
+class TransferOwnershipRequest(PasswordConfirmation):
+    membership_id: uuid.UUID = Field(description="An administrator's membership")
 
 
 class OrganizationUpdate(BaseModel):
@@ -48,7 +69,8 @@ class MemberRead(BaseModel):
     membership_id: uuid.UUID
     user_id: uuid.UUID
     name: str
-    email: str
+    # null unless the caller has member.manage (agents see names only)
+    email: str | None
     role: MembershipRole
     custom_role_id: uuid.UUID | None
     availability: AvailabilityStatus

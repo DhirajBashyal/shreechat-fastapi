@@ -57,6 +57,7 @@ from app.models import (
 from app.models.enums import MembershipRole, SubscriptionState
 from app.schemas.auth import LoginRequest, SignupRequest
 from app.services.audit import audit, client_ip
+from app.services.limits import check_agent_seats
 from app.services.mailer import send_email
 
 logger = get_logger()
@@ -192,6 +193,7 @@ async def join_organization_from_invitation(
     )
     if existing is not None:
         raise ConflictError("You are already a member of this organization")
+    await check_agent_seats(session, invitation.organization_id, include_pending=False)
     membership = OrganizationMembership(
         id=uuid.uuid4(),
         organization_id=invitation.organization_id,
@@ -275,7 +277,7 @@ async def signup(
             role=MembershipRole.OWNER,
         )
         workspace = Workspace(
-            id=uuid.uuid4(), organization_id=org.id, name="Main", slug="main"
+            id=uuid.uuid4(), organization_id=org.id, name="Support", slug="support"
         )
         session.add_all([membership, workspace])
         await session.flush()

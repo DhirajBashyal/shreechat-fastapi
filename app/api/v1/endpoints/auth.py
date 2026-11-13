@@ -24,6 +24,7 @@ from app.schemas.auth import (
 )
 from app.services import auth as auth_service
 from app.services.access import list_memberships
+from app.services.platform import is_platform_admin
 
 router = APIRouter()
 
@@ -90,6 +91,7 @@ async def _token_response(
         **_token_fields(tokens, response, web),  # type: ignore[arg-type]
         user=UserRead.model_validate(tokens.user),
         memberships=await list_memberships(session, tokens.user.id),
+        is_platform_admin=await is_platform_admin(session, tokens.user.id),
     )
 
 
@@ -120,7 +122,7 @@ async def signup(
 
 
 @router.post("/login", summary="Log in with email and password")
-@limiter.limit("5/5minutes")
+@limiter.limit(lambda: settings.LOGIN_RATE_LIMIT)
 async def login(
     request: Request,
     response: Response,
@@ -217,4 +219,5 @@ async def me(current: CurrentUserDep, session: DbSession) -> MeResponse:
     return MeResponse(
         user=UserRead.model_validate(current.user),
         memberships=await list_memberships(session, current.user.id),
+        is_platform_admin=await is_platform_admin(session, current.user.id),
     )

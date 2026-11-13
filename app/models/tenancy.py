@@ -77,6 +77,10 @@ class Organization(Base):
     settings: Mapped[dict[str, Any]] = jsonb_object()
     limits_override: Mapped[dict[str, Any]] = jsonb_object()
     external_customer_id: Mapped[str | None] = mapped_column(String(255))
+    # Set while status = pending_deletion: the organization is purged after it.
+    deletion_scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL")
     )
@@ -122,8 +126,20 @@ class OrganizationMembership(Base):
             "organization_id", "user_id", name="org_memberships_user_uniq"
         ),
         UniqueConstraint("organization_id", "id", name="org_memberships_org_id_uniq"),
+        # Custom roles replace agent defaults only (docs/12 §2).
+        CheckConstraint(
+            "custom_role_id IS NULL OR role = 'agent'",
+            name="org_memberships_custom_role_agent_chk",
+        ),
         org_fk("custom_role_id", "roles", ondelete="SET NULL"),
         Index("org_memberships_user_idx", "user_id"),
+        # Exactly one owner per organization (docs/12 §2).
+        Index(
+            "org_memberships_one_owner_uniq",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("role = 'owner'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()

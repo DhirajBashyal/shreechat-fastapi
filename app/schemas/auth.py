@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.models.enums import MembershipRole
+from app.models.enums import MembershipRole, OrgStatus
 
 PASSWORD_MIN_LENGTH = 10  # docs/10_AUTHENTICATION_AND_RBAC.md §2.1
 
@@ -85,6 +85,10 @@ class MembershipRead(BaseModel):
     organization_id: uuid.UUID
     organization_name: str
     organization_slug: str
+    # active | suspended | pending_deletion: the app shows a blocking screen
+    # for anything but active (docs/12 §5.1).
+    organization_status: OrgStatus
+    deletion_scheduled_at: datetime | None
     membership_id: uuid.UUID
     role: MembershipRole
     custom_role_id: uuid.UUID | None
@@ -95,6 +99,8 @@ class MembershipRead(BaseModel):
 class MeResponse(BaseModel):
     user: UserRead
     memberships: list[MembershipRead]
+    # Our staff: the app shows a link to the platform console (/platform).
+    is_platform_admin: bool = False
 
 
 class RefreshResponse(BaseModel):
